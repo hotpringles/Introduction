@@ -1,0 +1,1780 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOGAE</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Pretendard', 'sans-serif'],
+            mono: ['"IBM Plex Mono"', 'Pretendard', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            night: { DEFAULT: '#171C22', text: '#E7ECF2', muted: '#C5CED8', bright: '#F4F7F5', line: '#2A3340' },
+            desk: '#F2F5F8',
+            sheet: '#FFFFFF',
+            ink: '#1A212B',
+            muted: '#3E4C5C',
+            line: { DEFAULT: '#D5DDE6', strong: '#C5CED6' },
+            hover: '#E7EDF2',
+            code: '#E4E9EE',
+            folder: { DEFAULT: '#E2B657', tab: '#C4A15A' },
+            cream: '#F8F1DE',
+            'on-folder': '#1A160C',
+            alert: '#A3432B',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    html { color-scheme: light; }
+    body { margin: 0; font-family: Pretendard, sans-serif; }
+    .para { transition: opacity .2s ease, background-color .2s ease; }
+    .para[data-on="true"] { background: rgb(248 241 222 / .7); }
+    .para[data-dim="true"] { opacity: .35; }
+    .role-cell:not(:hover):not(:focus-within) .role-cont { opacity: 0; }
+    .role-cont { transition: opacity .15s ease; }
+    .group-rule { transition: opacity .2s ease, background-color .2s ease; }
+    [data-group]:has(.para[data-on="true"]) .group-rule { background: #C4A15A; }
+    [data-group]:not(:has(.para[data-dim="false"])) .group-rule { opacity: .35; }
+    .work-grid { display: grid; grid-template-columns: minmax(0, 46rem); justify-content: center; column-gap: 3rem; }
+    #source-pane[data-wide="true"] .work-grid { grid-template-columns: 12rem minmax(0, 46rem); }
+    #source-pane[data-wide="true"] .work-title { grid-column: 2; grid-row: 1; }
+    #source-pane[data-wide="true"] #paras { grid-column: 2; grid-row: 2; }
+    #outline { grid-column: 1; grid-row: 2; align-self: start; }
+    #source-pane[data-wide="false"] #outline { display: none; }
+    #source-pane[data-wide="true"] ~ #outline-compact { display: none; }
+    @media (prefers-reduced-motion: reduce) { .para { transition: none; } }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    // 소개 SOGAE 프로토타입: 로그인 → 대시보드 → 구조 선택 → 작업대와 AI 피드백.
+    // 디자인은 SOGAE/prototypes/markdown-editor를 따르고, 데이터와 분석 규칙은
+    // docs/specs/2026-09-26-nextjs-rebuild-design.md의 Mock 계약을 브라우저 안에서 흉내 낸다.
+
+    const STORAGE_KEY = 'sogae:v1:proto';
+    const SCHEMA_VERSION = '1.0.0';
+
+    const WRITING_TYPES = [
+      ['cover_letter', '자기소개서'],
+      ['essay', '논술'],
+      ['report', '보고서'],
+      ['university_assignment', '대학 과제'],
+      ['free_writing', '자유 글'],
+    ];
+
+    const ROLES = {
+      claim: '주장', evidence: '근거', example: '예시', explanation: '설명',
+      counterargument: '반론', rebuttal: '재반박', conclusion: '결론', background: '배경',
+      problem: '문제', solution: '해결', action: '행동', result: '결과',
+    };
+
+    const STRUCTURES = {
+      intro_body_conclusion: { name: '서론·본론·결론', roles: ['background', 'explanation', 'conclusion'], desc: '가장 익숙한 틀입니다. 문제를 열고, 풀고, 닫는 흐름이 분명해야 합니다.' },
+      claim_evidence_example_conclusion: { name: '주장·근거·예시·결론', roles: ['claim', 'evidence', 'example', 'conclusion'], desc: '주장을 먼저 세우고 근거와 예시로 받칩니다. 논술과 칼럼에 잘 맞습니다.' },
+      problem_cause_solution_effect: { name: '문제·원인·해결·효과', roles: ['problem', 'explanation', 'solution', 'result'], desc: '무엇이 문제였고 왜 생겼는지, 어떻게 풀었고 무엇이 달라졌는지 차례로 씁니다.' },
+      star: { name: 'STAR', roles: ['background', 'problem', 'action', 'result'], desc: '상황, 과제, 행동, 결과. 경험을 증거로 보여 주는 자기소개서의 기본형입니다.' },
+      prep: { name: 'PREP', roles: ['claim', 'explanation', 'example', 'conclusion'], desc: '결론을 먼저 말하고 이유와 사례를 댄 뒤 다시 결론으로 닫습니다. 짧은 답변형 문항에 좋습니다.' },
+      comparison: { name: '비교·대조', roles: ['background', 'claim', 'counterargument', 'conclusion'], desc: '두 입장을 나란히 놓고 차이를 드러낸 뒤 판단을 내립니다.' },
+      scqa: { name: 'SCQA', roles: ['background', 'problem', 'explanation', 'solution'], desc: '상황, 갈등, 질문, 답. 보고서 첫머리에서 읽는 사람의 궁금증을 끌어냅니다.' },
+      four_act: { name: '기승전결', roles: ['background', 'action', 'problem', 'result'], desc: '이야기처럼 읽힙니다. 전환점이 분명할수록 결말이 살아납니다.' },
+      topic_first_and_last: { name: '양괄식', roles: ['claim', 'evidence', 'conclusion'], desc: '핵심 문장을 처음과 끝에 두어 요점이 흐려지지 않게 합니다.' },
+      free_structure: { name: '자유 구조', roles: [], desc: '정해진 단계 없이 씁니다. 분석은 문단 역할의 흐름을 읽어 가장 가까운 구조를 알려 줍니다.' },
+    };
+
+    const RECOMMEND = {
+      cover_letter: ['star', 'prep', 'four_act'],
+      essay: ['claim_evidence_example_conclusion', 'comparison', 'intro_body_conclusion'],
+      report: ['problem_cause_solution_effect', 'scqa', 'topic_first_and_last'],
+      university_assignment: ['intro_body_conclusion', 'claim_evidence_example_conclusion', 'problem_cause_solution_effect'],
+      free_writing: ['free_structure', 'four_act', 'intro_body_conclusion'],
+    };
+
+    const SCORE_ITEMS = [
+      ['logic', '논리'], ['clarity', '명료성'], ['cohesion', '응집성'],
+      ['specificity', '구체성'], ['structure', '구조'], ['toneConsistency', '어조 일관성'],
+    ];
+
+    const ROLE_PROMPTS = {
+      background: '어떤 상황이었나요? 때와 곳, 맡은 일을 적어 보세요.',
+      problem: '무엇이 막혀 있었나요?',
+      action: '내가 직접 한 일을 동사로 적어 보세요.',
+      result: '무엇이 달라졌나요? 숫자나 반응으로 보여 주세요.',
+      claim: '이 글에서 말하고 싶은 한 문장은 무엇인가요?',
+      evidence: '그 주장이 맞다고 믿는 이유는 무엇인가요?',
+      example: '이유를 보여 줄 장면이나 사례를 하나 골라 보세요.',
+      explanation: '앞 문단을 풀어 설명해 보세요.',
+      counterargument: '반대편은 무엇이라고 말할까요?',
+      rebuttal: '그 반론에 어떻게 답하겠어요?',
+      conclusion: '처음의 주장을 한 번 더 묶어 보세요.',
+      solution: '어떻게 풀었나요, 혹은 풀 수 있을까요?',
+    };
+
+    const ROLE_EXAMPLES = {
+      background: '[시기]에 [곳]에서 [맡은 일]을 했다.',
+      problem: '[무엇]이 [어떻게] 되지 않아 [누가] 곤란해했다.',
+      action: '나는 [기간] 동안 [구체적 행동]을 했다.',
+      result: '그 결과 [지표]가 [전]에서 [후]로 바뀌었다.',
+      claim: '나는 [주제]에 대해 [입장]이라고 생각한다.',
+      evidence: '그 이유는 [근거] 때문이다.',
+      example: '예를 들어 [사례]에서 [무엇]이 드러났다.',
+      explanation: '이는 [앞 내용]이 [무엇]을 뜻한다는 말이다.',
+      counterargument: '물론 [반대 입장]이라는 의견도 있다.',
+      rebuttal: '그러나 [반론의 한계] 때문에 [내 입장]이 더 설득력 있다.',
+      conclusion: '따라서 [처음의 주장]을 다시 확인하며 [남길 한 문장]으로 맺는다.',
+      solution: '[원인]을 줄이기 위해 [방법]을 택했다.',
+    };
+
+    // R1: 뭉뚱그린 표현. 긴 표현부터 찾는다.
+    const VAGUE = [
+      ['많은 노력을 기울여', '[기간] 동안 매일 [시간]씩 들여'],
+      ['많은 노력', '[기간] 동안의 [구체적 행동]'],
+      ['열심히 하는', '[구체적 행동]을 끝까지 하는'],
+      ['열심히', '[기간] 동안 [횟수]번'],
+      ['최선을 다해', '[구체적 행동]을 끝까지 해'],
+      ['최선을 다했', '[구체적 행동]을 끝까지 해냈'],
+      ['많은 것을 배웠', '[배운 것 하나]를 배웠'],
+      ['다양한 경험', '[경험 두 가지]'],
+      ['큰 도움이 되었', '[무엇]을 [수치]만큼 바꾸었'],
+      ['매우 중요', '[이유] 때문에 중요'],
+    ];
+
+    const COVER = [
+      ['background', '대학교 2학년 때 교내 카페 운영 동아리에서 재고 관리를 맡았습니다. 매주 우유와 원두가 남거나 모자라서 부원들 사이에 불만이 많았습니다.'],
+      ['problem', '문제는 발주량을 담당자의 감으로 정한다는 점이었습니다. 저는 이 방식을 바꾸고 싶었지만, 선배들은 지금까지 문제없이 해 왔다며 새 방식에 부정적이었습니다.'],
+      ['action', '그래서 저는 많은 노력을 기울여 지난 한 학기 동안의 판매 기록을 엑셀로 정리했고, 요일과 날씨, 시험 기간에 따라 판매량이 어떻게 달라지는지 비교한 표를 만들어 회의 때 선배들에게 보여 주었습니다.'],
+      ['explanation', '이 경험을 통해 많은 것을 배웠습니다. 앞으로도 열심히 하는 사람이 되고 싶습니다.'],
+    ];
+
+    const ESSAY = [
+      ['claim', '원격 수업은 대면 수업을 완전히 대체할 수 없다. 원격 수업은 시간과 장소의 제약을 줄였지만, 배움은 지식을 전달받는 데서 끝나지 않기 때문이다.'],
+      ['evidence', '학습은 질문과 반응이 오가는 과정에서 깊어진다. 화면 너머의 학생은 질문할 때를 놓치기 쉽고, 교사는 학생의 표정을 읽기 어렵다.'],
+      ['example', '원격 수업을 경험한 학생들은 편리함을 인정하면서도 동료와 나누던 토론이 줄었다는 점을 가장 아쉬워한다.'],
+      ['conclusion', '따라서 원격 수업은 대면 수업을 보완하는 도구로 쓰일 때 가장 가치가 있다.'],
+    ];
+
+    const VIEWS = [['desk', '대시보드'], ['new', '새 글'], ['doc', '작업대']];
+    const NAV_ICONS = {
+      desk: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+      new: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+      doc: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+    };
+
+    let state = null;
+    const ui = {
+      docId: '',
+      outlineOpen: false,
+      openIssue: -1,
+      tab: 'issues',
+      activePara: '',
+      analyzing: false,
+      analyzeError: '',
+      saveTimer: 0,
+      saveStatus: 'saved',
+      savedAt: '',
+      panelW: '26rem',
+      loginTouched: false,
+    };
+    const app = document.getElementById('app');
+
+    function uid() {
+      return Math.random().toString(36).slice(2, 10);
+    }
+
+    function daysAgo(days, hour) {
+      const date = new Date();
+      date.setDate(date.getDate() - days);
+      date.setHours(hour, 12, 0, 0);
+      return date.toISOString();
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function typeName(id) {
+      const item = WRITING_TYPES.find(([key]) => key === id);
+      return item ? item[1] : '';
+    }
+
+    function flowText(structureId) {
+      const roles = STRUCTURES[structureId].roles;
+      return roles.length ? roles.map((role) => ROLES[role]).join(' → ') : '정해진 단계 없음';
+    }
+
+    function countChars(text) { return Array.from(String(text || '').replace(/\n/g, '')).length; }
+
+    function docText(doc) { return doc.paragraphs.map((p) => p.text).join('\n'); }
+
+    function docTitle(doc) { return doc.title.trim() || '제목 없음'; }
+
+    function excerpt(doc, size) {
+      const first = doc.paragraphs.find((p) => p.text.trim());
+      const text = first ? first.text.trim() : '';
+      return text.length > size ? text.slice(0, size) + '…' : text;
+    }
+
+    function dayKey(date) {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+    }
+
+    function clock(date) {
+      return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
+    }
+
+    function formatWhen(iso) {
+      const date = new Date(iso);
+      const today = new Date();
+      const yesterday = new Date();
+      yesterday.setDate(today.getDate() - 1);
+      const key = dayKey(date);
+      if (key === dayKey(today)) return `오늘 ${clock(date)}`;
+      if (key === dayKey(yesterday)) return `어제 ${clock(date)}`;
+      const monthDay = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric' }).format(date);
+      return `${monthDay} ${clock(date)}`;
+    }
+
+    function formatToday() {
+      return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
+    }
+
+    /* ---------- 저장소 ---------- */
+
+    function persist() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        return true;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function load() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+        if (saved && Array.isArray(saved.docs)) {
+          state = saved;
+          state.analyses = state.analyses || {};
+          state.versions = state.versions || {};
+          state.prefs = Object.assign({ panelOpen: true, deskType: 'cover_letter' }, state.prefs);
+          return;
+        }
+      } catch (error) { /* 깨진 값은 비우고 처음부터 시작한다 */ }
+      state = { session: null, seeded: false, docs: [], analyses: {}, versions: {}, prefs: { panelOpen: true, deskType: 'cover_letter' }, lastDocId: '' };
+      persist();
+    }
+
+    function session() {
+      const current = state.session;
+      if (!current || new Date(current.expiresAt) < new Date()) return null;
+      return current;
+    }
+
+    function makeDoc(writingType, structure, title, rows, createdAt, updatedAt) {
+      return {
+        id: uid(),
+        title,
+        writingType,
+        structure,
+        paragraphs: rows.map(([role, text]) => ({ id: uid(), role, text })),
+        createdAt,
+        updatedAt,
+      };
+    }
+
+    function seedDemoScenario() {
+      if (state.seeded) return;
+      const cover = makeDoc('cover_letter', 'star', '데이터로 설득했던 순간', COVER, daysAgo(6, 20), daysAgo(1, 21));
+      const essay = makeDoc('essay', 'claim_evidence_example_conclusion', '원격 수업은 대면 수업을 대체할 수 있는가', ESSAY, daysAgo(3, 15), daysAgo(3, 16));
+      state.docs = [cover, essay];
+      const request = buildAnalyzeRequest(cover);
+      const record = analyze(request);
+      state.analyses[cover.id] = [{
+        id: uid(), documentId: cover.id, versionId: null, snapshot: request.paragraphs, schemaVersion: SCHEMA_VERSION,
+        model: 'mock', promptVersion: null, result: record.result, hints: record.hints, createdAt: daysAgo(1, 21),
+      }];
+      state.lastDocId = cover.id;
+      state.seeded = true;
+    }
+
+    function docById(id) { return state.docs.find((doc) => doc.id === id) || null; }
+
+    function sortedDocs() { return state.docs.slice().sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)); }
+
+    function analysesOf(id) { return state.analyses[id] || []; }
+
+    function average(scores) {
+      const values = SCORE_ITEMS.map(([key]) => scores[key]);
+      return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
+    }
+
+    function latestScore(id) {
+      const latest = analysesOf(id)[0];
+      return latest ? average(latest.result.scores) : null;
+    }
+
+    function lowestItem(scores) {
+      return SCORE_ITEMS.reduce((low, item) => (scores[item[0]] < scores[low[0]] ? item : low), SCORE_ITEMS[0]);
+    }
+
+    function createVersion(doc, reason) {
+      const list = state.versions[doc.id] || (state.versions[doc.id] = []);
+      const body = JSON.stringify({ title: doc.title, paragraphs: doc.paragraphs });
+      if (list[0] && list[0].body === body) return false;
+      list.unshift({ id: uid(), documentId: doc.id, reason, body, createdAt: new Date().toISOString() });
+      state.versions[doc.id] = list.slice(0, 40);
+      return true;
+    }
+
+    /* ---------- 분석 (MockAnalyzer) ---------- */
+
+    function buildAnalyzeRequest(doc) {
+      const paragraphs = doc.paragraphs
+        .filter((p) => p.text.trim())
+        .slice(0, 50)
+        .map((p, index) => ({ paragraphId: p.id, index, role: p.role || null, text: p.text.trim().slice(0, 2000) }));
+      return { writingType: doc.writingType, selectedStructure: doc.structure, paragraphs };
+    }
+
+    function sentences(text) {
+      return text.split(/(?<=[.!?])\s+|\n+/).map((item) => item.trim()).filter(Boolean);
+    }
+
+    function lcs(a, b) {
+      const table = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+      for (let i = 1; i <= a.length; i += 1) {
+        for (let j = 1; j <= b.length; j += 1) {
+          table[i][j] = a[i - 1] === b[j - 1] ? table[i - 1][j - 1] + 1 : Math.max(table[i - 1][j], table[i][j - 1]);
+        }
+      }
+      return table[a.length][b.length];
+    }
+
+    function clip(text, size) { return text.length > size ? text.slice(0, size - 1) + '…' : text; }
+
+    function analyze(request) {
+      const { paragraphs, selectedStructure } = request;
+      const penalty = { logic: 0, clarity: 0, cohesion: 0, specificity: 0, structure: 0, toneConsistency: 0 };
+      const found = [];
+      const add = (weight, label, role, issue) => found.push({ weight, hint: { label, role }, issue });
+      const at = (p) => ({ paragraphId: p.paragraphId, paragraphIndexAtAnalysis: p.index });
+      const formal = (line) => /니다[.!?]?$/.test(line);
+
+      // R1 뭉뚱그린 표현
+      paragraphs.forEach((p) => {
+        const lines = sentences(p.text);
+        const hit = lines.map((line) => ({ line, pair: VAGUE.find(([word]) => line.includes(word)) })).filter((item) => item.pair);
+        if (!hit.length) return;
+        penalty.specificity += 2;
+        const { line, pair } = hit[0];
+        const word = pair[0].replace(/[을를]$/, '');
+        add(2, '구체성', null, Object.assign(at(p), {
+          excerpt: clip(line, 400),
+          reason: clip(`'${word}' 같은 표현은 무엇을 얼마나 했는지 보여 주지 않습니다.${hit.length > 1 ? ` 이 문단에 비슷한 표현이 ${hit.length}번 있습니다.` : ''}`, 300),
+          suggestion: '행동, 기간, 숫자 가운데 하나를 넣어 읽는 사람이 장면을 떠올리게 해 보세요.',
+          question: '이 표현을 쓴 순간, 실제로 무엇을 했고 무엇이 달라졌나요?',
+          revisedExample: clip(line.replace(pair[0], pair[1]), 400),
+        }));
+      });
+
+      // R2 80자를 넘는 문장
+      paragraphs.forEach((p) => {
+        const long = sentences(p.text).filter((line) => countChars(line) > 80);
+        if (!long.length) return;
+        penalty.clarity += Math.min(long.length, 3);
+        const line = long[0];
+        const split = /(했|었|았|였)고,\s*/;
+        const revised = split.test(line)
+          ? line.replace(split, formal(line) ? '$1습니다. ' : '$1다. ')
+          : '[첫 문장: 가장 먼저 전할 한 가지]. [둘째 문장: 덧붙이는 내용].';
+        add(1, '명료성', null, Object.assign(at(p), {
+          excerpt: clip(line, 400),
+          reason: `한 문장이 ${countChars(line)}자입니다. 80자를 넘으면 읽는 사람이 주어와 서술어를 놓치기 쉽습니다.`,
+          suggestion: '‘~고’, ‘~며’, ‘~는데’로 이어지는 자리에서 두 문장으로 나눠 보세요.',
+          question: '이 문장에서 가장 먼저 전하고 싶은 한 가지는 무엇인가요?',
+          revisedExample: clip(revised, 400),
+        }));
+      });
+
+      // R3 선택 구조의 단계 누락
+      const stages = STRUCTURES[selectedStructure].roles;
+      const present = new Set(paragraphs.map((p) => p.role).filter(Boolean));
+      const missing = stages.filter((role) => !present.has(role));
+      missing.forEach((role) => {
+        penalty.structure += 2;
+        add(2, '구조', role, {
+          paragraphId: null,
+          paragraphIndexAtAnalysis: null,
+          excerpt: `${STRUCTURES[selectedStructure].name} 구조의 '${ROLES[role]}' 단계`,
+          reason: `선택한 ${STRUCTURES[selectedStructure].name} 구조에는 '${ROLES[role]}' 역할을 맡은 문단이 있어야 하는데 아직 없습니다.`,
+          suggestion: `'${ROLES[role]}' 문단을 새로 쓰거나, 이미 쓴 문단 가운데 그 역할을 하는 문단의 역할을 다시 지정해 보세요.`,
+          question: ROLE_PROMPTS[role],
+          revisedExample: ROLE_EXAMPLES[role],
+        });
+      });
+
+      // 응집성: 역할 없는 문단과 단계 순서가 뒤집힌 곳
+      const unassigned = paragraphs.filter((p) => !p.role).length;
+      const order = paragraphs.map((p) => stages.indexOf(p.role)).filter((index) => index >= 0);
+      const inversions = order.filter((value, index) => index > 0 && value < order[index - 1]).length;
+      penalty.cohesion += Math.min(unassigned, 3) + Math.min(inversions, 3);
+
+      // R4 결론 누락
+      const last = paragraphs[paragraphs.length - 1];
+      if (paragraphs.length >= 2 && !['conclusion', 'result'].includes(last.role)) {
+        penalty.logic += 2;
+        const lines = sentences(last.text);
+        add(2, '논리', null, Object.assign(at(last), {
+          excerpt: clip(lines[lines.length - 1] || last.text, 400),
+          reason: '마지막 문단이 결론이나 결과로 끝나지 않아, 글이 무엇을 보여 주려 했는지 흐려집니다.',
+          suggestion: '처음에 던진 주장이나 경험의 의미를 한 문장으로 다시 묶고, 그 뒤에 무엇이 달라졌는지 덧붙여 보세요.',
+          question: '읽는 사람이 이 글을 덮고 기억했으면 하는 한 문장은 무엇인가요?',
+          revisedExample: formal(last.text.trim())
+            ? '[이 경험이 보여 준 것]을 통해 [무엇]이 [어떻게] 달라졌습니다.'
+            : ROLE_EXAMPLES.conclusion,
+        }));
+      }
+
+      // 어조: 합니다체와 한다체가 섞였는지
+      const lines = paragraphs.flatMap((p) => sentences(p.text).map((line) => ({ p, line })));
+      const formalLines = lines.filter(({ line }) => formal(line));
+      const plainLines = lines.filter(({ line }) => /[^니]다[.!?]?$/.test(line));
+      if (formalLines.length && plainLines.length) {
+        penalty.toneConsistency += 2;
+        const minority = formalLines.length < plainLines.length ? formalLines[0] : plainLines[0];
+        const toPlain = formalLines.length < plainLines.length;
+        const revised = toPlain
+          ? minority.line.replace(/입니다/, '이다').replace(/습니다/, '다')
+          : minority.line.replace(/했다/, '했습니다').replace(/었다/, '었습니다').replace(/이다/, '입니다');
+        add(2, '어조 일관성', null, Object.assign(at(minority.p), {
+          excerpt: clip(minority.line, 400),
+          reason: '합니다체와 한다체가 섞여 있어 읽는 사람과의 거리가 문단마다 달라집니다.',
+          suggestion: '글 전체를 한 가지 어미로 맞춰 보세요.',
+          question: '이 글을 읽을 사람에게 어떤 거리에서 말하고 싶나요?',
+          revisedExample: clip(revised, 400),
+        }));
+      }
+
+      // R5 가장 가까운 구조
+      const sequence = paragraphs.map((p) => p.role).filter(Boolean);
+      let detected = 'free_structure';
+      let best = 1;
+      Object.keys(STRUCTURES).forEach((key) => {
+        if (key === 'free_structure') return;
+        const value = lcs(sequence, STRUCTURES[key].roles);
+        if (value > best || (value === best && value > 1 && key === selectedStructure)) {
+          best = value;
+          detected = key;
+        }
+      });
+
+      const scores = {};
+      Object.keys(penalty).forEach((key) => { scores[key] = Math.max(0, Math.min(10, 10 - penalty[key])); });
+      const picked = found.map((item, order) => ({ item, order }))
+        .sort((a, b) => b.item.weight - a.item.weight || a.order - b.order)
+        .slice(0, 6)
+        .map(({ item }) => item);
+
+      let alignment = 'match';
+      if (selectedStructure === 'free_structure') alignment = detected === 'free_structure' ? 'match' : 'partial';
+      else if (missing.length || detected !== selectedStructure) alignment = missing.length >= stages.length / 2 ? 'mismatch' : 'partial';
+
+      const selectedName = STRUCTURES[selectedStructure].name;
+      const detectedName = STRUCTURES[detected].name;
+      const missingText = missing.map((role) => `'${ROLES[role]}'`).join(', ');
+      const explanation = alignment === 'match'
+        ? `문단 역할의 흐름이 선택한 ${selectedName} 구조와 맞습니다.`
+        : detected === selectedStructure
+          ? `문단 역할의 흐름은 ${selectedName}에 가깝지만 ${missingText} 단계가 비어 있습니다.`
+          : `지금 글은 ${detectedName} 흐름에 더 가깝게 읽힙니다.${missing.length ? ` ${missingText} 단계를 채우면 선택한 ${selectedName} 구조와 맞춰집니다.` : ''}`;
+
+      const low = lowestItem(scores);
+      const summary = [
+        `${paragraphs.length}개 문단을 ${selectedName} 구조로 읽었습니다.`,
+        `가장 낮은 항목은 ${low[1]}(${scores[low[0]]}점)입니다.`,
+        missing.length ? `선택한 구조에서 ${missingText} 단계가 비어 있습니다.` : '선택한 구조의 단계는 모두 갖췄습니다.',
+        '문장을 대신 고치지 않고, 직접 고칠 수 있도록 질문과 예시를 남겼습니다.',
+      ].join(' ');
+
+      return {
+        result: {
+          summary,
+          scores,
+          detectedStructure: {
+            logicalStructure: detected,
+            paragraphRoles: paragraphs.filter((p) => p.role).map((p) => ({ paragraphId: p.paragraphId, paragraphIndexAtAnalysis: p.index, role: p.role })),
+          },
+          issues: picked.map((item) => item.issue),
+          structureComparison: { selectedStructure, detectedStructure: detected, alignment, explanation },
+        },
+        // 화면 표시용 보조 정보. 계약(result)에는 넣지 않는다.
+        hints: picked.map((item) => item.hint),
+      };
+    }
+
+    /* ---------- 공통 조각 ---------- */
+
+    function folderIcon(size, open) {
+      const lift = open ? '-translate-y-2.5' : 'group-hover:-translate-y-1.5';
+      return `<svg viewBox="0 0 120 100" class="${size} overflow-visible" aria-hidden="true">
+        <path class="fill-folder-tab" d="M0 6a6 6 0 0 1 6-6h34.5a6 6 0 0 1 4.7 2.3L51 9.6h63a6 6 0 0 1 6 6V94a6 6 0 0 1-6 6H6a6 6 0 0 1-6-6Z"/>
+        <rect class="fill-desk motion-safe:transition-transform motion-safe:duration-200 ${lift}" x="4" y="15" width="112" height="30" rx="2"/>
+        <rect class="fill-folder" x="0" y="23" width="120" height="77" rx="6"/>
+      </svg>`;
+    }
+
+    const focusRing = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink';
+    const focusRingDark = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-folder';
+    const primary = `rounded-md bg-folder px-3 py-1.5 text-sm font-medium text-on-folder motion-safe:transition hover:brightness-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`;
+
+    function navButton(id, label, current) {
+      const on = current === id;
+      const tone = on ? 'bg-white/[0.07] text-folder md:before:bg-folder' : 'text-night-muted hover:bg-white/5 hover:text-night-bright';
+      const href = id === 'doc' ? `#/doc/${state.lastDocId}` : `#/${id}`;
+      return `<a href="${href}" class="relative flex shrink-0 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm no-underline motion-safe:transition-colors md:w-full md:before:absolute md:before:inset-y-2 md:before:-left-3 md:before:w-0.5 md:before:rounded-full ${tone} ${focusRingDark}" aria-current="${on ? 'page' : 'false'}">
+        <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICONS[id]}</svg>${label}</a>`;
+    }
+
+    function shell(current, main, mainClass) {
+      const views = VIEWS.filter(([id]) => id !== 'doc' || docById(state.lastDocId));
+      const who = session();
+      return `<div class="flex min-h-[100dvh] flex-col bg-night text-night-text md:h-[100dvh] md:flex-row md:overflow-hidden">
+        <aside class="relative flex shrink-0 items-center gap-1 overflow-x-auto max-md:[scrollbar-width:none] border-b border-white/10 px-3 py-2 md:w-48 md:flex-col md:items-stretch md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-6" aria-label="이동">
+          <p class="mr-2 flex shrink-0 items-center gap-2 px-3 text-sm font-semibold tracking-[0.14em] text-night-bright md:mb-6 md:mr-0">${folderIcon('h-4 w-5', false)}SOGAE</p>
+          ${views.map(([id, label]) => navButton(id, label, current)).join('')}
+          <div class="ml-auto flex shrink-0 items-center gap-2 px-3 md:ml-0 md:mt-auto md:flex-col md:items-start md:gap-1 md:pt-6">
+            <p class="hidden max-w-full truncate font-mono text-xs text-night-muted md:block">${escapeHtml(who ? who.email : '')}</p>
+            <button type="button" data-signout class="text-sm text-night-muted underline-offset-4 hover:text-night-bright hover:underline ${focusRingDark}">로그아웃</button>
+          </div>
+        </aside>
+        <div class="${mainClass}">${main}</div>
+      </div>`;
+    }
+
+    function blanks(text) {
+      return escapeHtml(text).replace(/\[([^\]]+)\]/g, '<span class="rounded bg-folder/30 px-1 font-medium text-on-folder">$1</span>');
+    }
+
+    /* ---------- 로그인 ---------- */
+
+    function login() {
+      const field = (id, label, type, auto, placeholder) => `
+        <label class="mt-6 block text-sm text-muted" for="${id}">${label}</label>
+        <input id="${id}" name="${id}" type="${type}" autocomplete="${auto}" placeholder="${placeholder}" aria-describedby="${id}-error" class="mt-2 w-full rounded-md border border-line-strong bg-sheet px-3 py-2 text-sm text-ink placeholder:text-muted/50 aria-[invalid=true]:border-alert ${focusRing}">
+        <p id="${id}-error" class="mt-1.5 min-h-[1rem] text-xs text-alert"></p>`;
+      return `<div class="grid min-h-[100dvh] bg-night md:grid-cols-[minmax(0,1fr)_30rem]">
+        <section class="flex flex-col justify-between gap-12 px-6 py-8 text-night-text md:px-14 md:py-12" aria-label="소개">
+          <p class="flex items-center gap-2 text-sm font-semibold tracking-[0.14em] text-night-bright">${folderIcon('h-4 w-5', false)}SOGAE</p>
+          <div class="max-w-3xl">
+            <h1 class="m-0 break-keep text-4xl font-semibold leading-[1.15] tracking-tight text-night-bright md:text-6xl">다시 만나서<br>반갑습니다</h1>
+            <div class="mt-10 max-w-2xl gap-10 text-[0.95rem] leading-7 text-night-muted md:columns-2">
+              <p class="m-0 break-keep">소개는 글을 대신 써 주지 않습니다. 내가 쓴 문단을 읽고 논리가 어디서 끊기는지, 어떤 습관이 반복되는지 짚어 줍니다.</p>
+              <p class="m-0 mt-4 break-keep md:mt-0">진단, 설명, 질문, 개선 제안의 순서로 돕습니다. 고치는 손은 끝까지 쓰는 사람의 것이고, 문체도 그대로 남습니다.</p>
+            </div>
+          </div>
+          <blockquote class="m-0 max-w-md break-keep border-l-2 border-folder pl-4 text-base leading-7 text-night-text">좋은 문장은 빌려 온 문장이 아니라, 다시 고쳐 쓴 내 문장이다.</blockquote>
+        </section>
+        <section class="flex items-center bg-sheet px-6 py-12 text-ink md:px-12" aria-label="로그인">
+          <form id="login-form" novalidate class="w-full">
+            <h2 class="m-0 text-2xl font-semibold tracking-tight">로그인</h2>
+            <p class="mt-2 break-keep text-sm leading-6 text-muted">프로토타입입니다. 이메일 형식과 8자 이상의 비밀번호면 들어갈 수 있습니다.</p>
+            ${field('email', '이메일', 'email', 'email', 'you@example.com')}
+            ${field('password', '비밀번호', 'password', 'current-password', '8자 이상')}
+            <button type="submit" class="mt-4 w-full rounded-md bg-folder px-4 py-2.5 text-sm font-semibold text-on-folder motion-safe:transition hover:brightness-95 active:scale-[0.98] ${focusRing}">로그인</button>
+            <button type="button" disabled class="mt-3 w-full cursor-not-allowed rounded-md border border-line-strong px-4 py-2.5 text-sm text-muted opacity-60">Google로 계속하기 · 준비 중</button>
+          </form>
+        </section>
+      </div>`;
+    }
+
+    function checkLogin(show) {
+      const email = document.getElementById('email');
+      const password = document.getElementById('password');
+      const errors = {
+        email: !email.value.trim() ? '이메일을 적어 주세요.' : /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim()) ? '' : '이메일 형식이 아닙니다. 예: you@example.com',
+        password: !password.value ? '비밀번호를 적어 주세요.' : password.value.length >= 8 ? '' : `비밀번호는 8자 이상이어야 합니다. 지금 ${password.value.length}자입니다.`,
+      };
+      if (show) {
+        [['email', email], ['password', password]].forEach(([key, input]) => {
+          input.setAttribute('aria-invalid', errors[key] ? 'true' : 'false');
+          document.getElementById(`${key}-error`).textContent = errors[key];
+        });
+      }
+      return !errors.email && !errors.password;
+    }
+
+    function signIn() {
+      ui.loginTouched = true;
+      if (!checkLogin(true)) {
+        const firstBad = document.querySelector('[aria-invalid="true"]');
+        if (firstBad) firstBad.focus();
+        return;
+      }
+      const email = document.getElementById('email').value.trim();
+      const now = new Date();
+      state.session = { userId: email, email, issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 7 * 864e5).toISOString() };
+      seedDemoScenario();
+      persist();
+      const next = new URLSearchParams(location.hash.split('?')[1] || '').get('next');
+      location.hash = next && next.startsWith('/') && !next.startsWith('/login') ? next : '/desk';
+    }
+
+    /* ---------- 대시보드 ---------- */
+
+    function docRow(doc) {
+      const score = latestScore(doc.id);
+      return `<div class="-mx-3 flex items-start justify-between gap-4 rounded-md px-3 py-3 motion-safe:transition-colors hover:bg-desk">
+          <a href="#/doc/${doc.id}" class="min-w-0 text-left no-underline ${focusRing}">
+            <span class="block truncate text-base font-medium text-ink">${escapeHtml(docTitle(doc))}</span>
+            <span class="mt-0.5 block truncate text-sm leading-6 text-muted">${escapeHtml(excerpt(doc, 60) || '본문이 없습니다.')}</span>
+            <span class="mt-1 block font-mono text-xs text-muted">${STRUCTURES[doc.structure].name}</span>
+          </a>
+          <div class="shrink-0 text-right">
+            <p class="font-mono text-xs text-muted">${formatWhen(doc.updatedAt)}</p>
+            <p class="mt-0.5 font-mono text-xs ${score === null ? 'text-muted' : 'text-ink'}">${score === null ? '분석 전' : `${score.toFixed(1)}점`}</p>
+            <button type="button" data-remove="${doc.id}" class="mt-1 text-xs text-muted underline-offset-4 hover:underline ${focusRing}">치우기</button>
+          </div>
+        </div>`;
+    }
+
+    function folderGrid() {
+      const current = state.prefs.deskType;
+      const tiles = WRITING_TYPES.map(([id, name]) => {
+        const on = id === current;
+        const count = state.docs.filter((doc) => doc.writingType === id).length;
+        return `<button type="button" data-desk-type="${id}" class="group flex w-[5.75rem] flex-col items-center gap-2 rounded-lg px-2 pb-3 pt-4 text-center motion-safe:transition-colors ${on ? 'bg-desk' : 'hover:bg-desk/60'} ${focusRing}" aria-pressed="${on ? 'true' : 'false'}" aria-label="${name}, 글 ${count}편">
+          ${folderIcon('h-14 w-[4.2rem]', on)}
+          <span class="block max-w-full truncate text-sm ${on ? 'font-semibold text-ink' : 'text-muted'}">${name}</span>
+          <span class="-mt-1.5 font-mono text-xs text-muted">${count}편</span>
+        </button>`;
+      }).join('');
+      return `<div class="mt-3 flex flex-wrap gap-1">${tiles}</div>`;
+    }
+
+    function scoreBars(scores, compact, decimals) {
+      const low = lowestItem(scores)[0];
+      return `<ul class="m-0 flex list-none flex-col ${compact ? 'gap-2' : 'gap-2.5'} p-0">${SCORE_ITEMS.map(([key, label]) => {
+        const isLow = key === low;
+        return `<li class="grid grid-cols-[5.5rem_minmax(0,1fr)_1.75rem] items-center gap-3">
+          <span class="text-sm ${isLow ? 'font-semibold text-ink' : 'text-muted'}">${label}${isLow ? '<span class="sr-only">, 가장 낮음</span>' : ''}</span>
+          <span class="h-1 overflow-hidden rounded-full bg-line" aria-hidden="true"><span class="block h-full rounded-full ${isLow ? 'bg-folder-tab' : 'bg-ink'}" style="width:${scores[key] * 10}%"></span></span>
+          <span class="text-right font-mono text-xs ${isLow ? 'text-ink' : 'text-muted'}">${decimals ? scores[key].toFixed(1) : scores[key]}</span>
+        </li>`;
+      }).join('')}</ul>`;
+    }
+
+    function desk() {
+      const docs = sortedDocs();
+      const lead = docs[0];
+      const todayKey = dayKey(new Date());
+      const touched = docs.filter((doc) => dayKey(new Date(doc.updatedAt)) === todayKey);
+      const analysedToday = Object.values(state.analyses).flat().filter((a) => dayKey(new Date(a.createdAt)) === todayKey).length;
+      const todayLine = touched.length || analysedToday
+        ? `오늘 고친 글 ${touched.length}편, 분석 ${analysedToday}번`
+        : '오늘은 아직 고친 글이 없습니다.';
+
+      const leadHtml = lead
+        ? `<div class="mt-8 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+          <div class="min-w-0">
+            <p class="text-xs font-medium text-muted">이어서 쓸 글 · ${typeName(lead.writingType)} · ${STRUCTURES[lead.structure].name}</p>
+            <h1 class="mt-3 max-w-3xl break-keep text-3xl font-semibold leading-tight tracking-tight">${escapeHtml(docTitle(lead))}</h1>
+            <p class="mt-2 max-w-2xl truncate text-base leading-7 text-muted">${escapeHtml(excerpt(lead, 86) || '본문을 아직 적지 않았습니다.')}</p>
+            <p class="mt-2 font-mono text-xs text-muted">${formatWhen(lead.updatedAt)}, ${countChars(docText(lead))}자, ${lead.paragraphs.length}문단</p>
+          </div>
+          <div class="flex shrink-0 flex-wrap items-center gap-4">
+            <a href="#/doc/${lead.id}" class="${primary} no-underline">이어 쓰기</a>
+            <a href="#/new" class="text-sm text-muted underline-offset-4 hover:underline ${focusRing}">새 글 쓰기</a>
+          </div>
+        </div>`
+        : `<div class="mt-8">
+          <h1 class="text-3xl font-semibold tracking-tight">아직 글이 없습니다</h1>
+          <p class="mt-3 max-w-xl break-keep text-base leading-7 text-muted">글 유형과 구조를 고르면 작업대에서 문단마다 역할을 정해 두고 쓸 수 있습니다.</p>
+          <a href="#/new" class="${primary} mt-6 inline-block no-underline">새 글 쓰기</a>
+        </div>`;
+
+      const all = docs.map((doc) => ({ doc, analysis: analysesOf(doc.id)[0] })).filter((item) => item.analysis)
+        .sort((a, b) => new Date(b.analysis.createdAt) - new Date(a.analysis.createdAt));
+      // 글마다 가장 최근 분석 하나를 골라 항목별로 평균을 낸다.
+      const overall = all.length
+        ? Object.fromEntries(SCORE_ITEMS.map(([key]) => [key, Math.round((all.reduce((sum, item) => sum + item.analysis.result.scores[key], 0) / all.length) * 10) / 10]))
+        : null;
+      const scoreHtml = overall
+        ? (() => {
+          const low = lowestItem(overall);
+          const high = SCORE_ITEMS.reduce((top, item) => (overall[item[0]] > overall[top[0]] ? item : top), SCORE_ITEMS[0]);
+          const weakest = all.reduce((min, item) => (average(item.analysis.result.scores) < average(min.analysis.result.scores) ? item : min), all[0]);
+          const lastAt = all[0].analysis.createdAt;
+          return `<div class="mt-4 flex flex-wrap items-end gap-x-5 gap-y-2">
+              <p class="m-0 flex items-baseline gap-2"><span class="text-[5rem] font-semibold leading-none tracking-tight tabular-nums">${average(overall).toFixed(1)}</span><span class="font-mono text-sm text-muted">/ 10</span></p>
+              <div class="min-w-0 pb-1">
+                <p class="m-0 text-sm text-muted">분석한 글 ${all.length}편의 평균</p>
+                <p class="m-0 mt-1 font-mono text-xs text-muted">마지막 분석 ${formatWhen(lastAt)}</p>
+              </div>
+            </div>
+            <p class="mt-5 break-keep text-sm leading-6 text-ink">글마다 가장 최근 분석을 모아 본 점수입니다. 가장 낮은 항목은 ${low[1]}(평균 ${overall[low[0]].toFixed(1)}점), 가장 높은 항목은 ${high[1]}(평균 ${overall[high[0]].toFixed(1)}점)입니다.</p>
+            <div class="mt-5">${scoreBars(overall, true, true)}</div>
+            <div class="mt-5 min-w-0">
+              <p class="m-0 text-xs text-muted">가장 먼저 손볼 글</p>
+              <a href="#/doc/${weakest.doc.id}?issue=0" class="mt-1 flex min-w-0 items-baseline gap-2 text-sm font-medium text-ink no-underline ${focusRing}"><span class="truncate underline decoration-folder-tab decoration-2 underline-offset-4">${escapeHtml(docTitle(weakest.doc))}</span><span class="shrink-0 font-mono text-xs text-muted">${average(weakest.analysis.result.scores).toFixed(1)}점 · 지적 ${weakest.analysis.result.issues.length}개</span></a>
+            </div>`;
+        })()
+        : '<p class="mt-4 break-keep text-sm leading-6 text-muted">아직 분석한 글이 없습니다. 작업대에서 분석하면 내 글 전체의 점수가 여기에 모입니다.</p>';
+
+      // 패턴은 점수가 아니라 여러 글에서 되풀이된 지적 종류를 센다.
+      const patternHtml = docs.length < 3
+        ? `<p class="mt-3 break-keep text-sm leading-6 text-muted">준비 중입니다. 글이 3편 쌓이면 여러 글에서 되풀이되는 습관을 보여 드립니다. 지금 ${docs.length}편입니다.</p>`
+        : (() => {
+          const counts = {};
+          all.forEach(({ analysis }) => (analysis.hints || []).forEach((hint) => {
+            if (hint.label) counts[hint.label] = (counts[hint.label] || 0) + 1;
+          }));
+          const top = Object.entries(counts).sort((x, y) => y[1] - x[1])[0];
+          if (!top) return '<p class="mt-3 text-sm leading-6 text-muted">아직 여러 글에서 되풀이된 지적이 없습니다.</p>';
+          return `<p class="mt-3 break-keep text-sm leading-6 text-ink">분석한 ${all.length}편에서 '${top[0]}' 지적이 ${top[1]}번 나왔습니다. 가장 자주 되풀이되는 습관입니다.</p>`;
+        })();
+
+      const typeDocs = docs.filter((doc) => doc.writingType === state.prefs.deskType);
+      // 1280px 이상에서는 좌우로 나눈다. 왼쪽은 점수, 오른쪽은 글 유형과 글 목록이며 목록만 따로 스크롤된다.
+      // 화면이 낮으면 페이지가 점수 칸 높이만큼 늘고, 목록은 그 높이에 맞춰진다.
+      return `<section class="mx-auto flex max-w-6xl flex-col px-5 py-10 md:px-14 md:py-12 xl:min-h-full" aria-label="대시보드">
+        <div class="flex flex-wrap items-end justify-between gap-4">
+          <p class="text-sm font-medium text-ink">${formatToday()}</p>
+          <p class="font-mono text-xs text-muted">${todayLine}</p>
+        </div>
+        ${leadHtml}
+        <div class="mt-14 flex flex-col gap-14 xl:mt-12 xl:grid xl:flex-1 xl:grid-cols-[minmax(0,21rem)_1px_minmax(0,1fr)] xl:gap-12">
+          <div class="flex min-w-0 flex-col">
+            <h2 class="text-xs font-medium text-muted">내 글 점수</h2>
+            ${scoreHtml}
+            <div class="mt-12 xl:mt-auto xl:pt-10">
+              <h2 class="text-xs font-medium text-muted">글쓰기 패턴</h2>
+              ${patternHtml}
+            </div>
+          </div>
+          <div class="hidden bg-line xl:block" aria-hidden="true"></div>
+          <div class="flex min-w-0 flex-col xl:min-h-0">
+            <h2 class="text-xs font-medium text-muted">글 유형 · ${WRITING_TYPES.length}개</h2>
+            <div class="-mx-2">${folderGrid()}</div>
+            <div class="mt-8 flex items-center justify-between gap-4 border-b border-line pb-2">
+              <h2 class="flex min-w-0 items-center gap-2 text-xs font-medium text-muted">${folderIcon('h-3.5 w-4 shrink-0', false)}<span class="truncate">${typeName(state.prefs.deskType)} · ${typeDocs.length}편</span></h2>
+              <a href="#/new?type=${state.prefs.deskType}" class="shrink-0 rounded-md px-2 py-1 text-sm text-ink no-underline motion-safe:transition-colors hover:bg-desk active:scale-[0.98] ${focusRing}">+ 새 글</a>
+            </div>
+            <div class="relative xl:min-h-[15rem] xl:flex-1">
+              <div id="desk-list" class="-mx-3 px-3 pt-2 xl:absolute xl:inset-0 xl:overflow-y-auto xl:pb-12 xl:[scrollbar-width:thin]">${typeDocs.map((doc) => docRow(doc)).join('') || '<p class="py-6 text-sm text-muted">이 유형에는 아직 글이 없습니다.</p>'}</div>
+              <div class="pointer-events-none absolute inset-x-0 bottom-0 hidden h-12 bg-gradient-to-t from-sheet to-transparent xl:block" aria-hidden="true"></div>
+            </div>
+          </div>
+        </div>
+      </section>`;
+    }
+
+    /* ---------- 구조 선택 ---------- */
+
+    function stageChips(structureId, tone) {
+      const roles = STRUCTURES[structureId].roles;
+      if (!roles.length) return `<p class="m-0 text-xs text-muted">정해진 단계 없음</p>`;
+      return `<ol class="m-0 flex list-none flex-wrap items-center gap-1 p-0">${roles.map((role, index) => `<li class="flex items-center gap-1">${index ? '<span class="text-xs text-muted" aria-hidden="true">→</span>' : ''}<span class="rounded px-1.5 py-0.5 text-xs ${tone}">${ROLES[role]}</span></li>`).join('')}</ol>`;
+    }
+
+    function structurePage(query) {
+      const typeFromQuery = query.get('type');
+      if (typeFromQuery && RECOMMEND[typeFromQuery] && !ui.pickTouched) {
+        state.pick = { type: typeFromQuery, structure: RECOMMEND[typeFromQuery][0] };
+      }
+      if (!state.pick || !RECOMMEND[state.pick.type]) state.pick = { type: state.prefs.deskType, structure: RECOMMEND[state.prefs.deskType][0] };
+      const { type, structure } = state.pick;
+      const recommended = RECOMMEND[type];
+      const others = Object.keys(STRUCTURES).filter((key) => !recommended.includes(key));
+
+      const types = WRITING_TYPES.map(([id, name]) => {
+        const on = id === type;
+        return `<button type="button" data-pick-type="${id}" class="group flex w-full shrink-0 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm motion-safe:transition-colors ${on ? 'bg-desk font-semibold text-ink' : 'text-muted hover:bg-desk/60'} ${focusRing}" aria-pressed="${on ? 'true' : 'false'}">${folderIcon('h-3.5 w-4 shrink-0', false)}${name}</button>`;
+      }).join('');
+
+      const cards = recommended.map((key, index) => {
+        const on = key === structure;
+        const tone = on
+          ? '-translate-y-1 ring-1 ring-folder-tab shadow-[0_14px_36px_rgb(196_161_90/0.22),0_3px_8px_rgb(196_161_90/0.14)]'
+          : 'ring-1 ring-transparent hover:ring-line-strong';
+        return `<button type="button" data-pick="${key}" class="flex h-full flex-col rounded-lg bg-desk p-5 text-left motion-safe:transition motion-safe:duration-200 ${tone} ${focusRing}" aria-pressed="${on ? 'true' : 'false'}">
+          <span class="font-mono text-xs ${on ? 'text-folder-tab' : 'text-muted'}">추천 ${index + 1}</span>
+          <span class="mt-2 block text-lg font-semibold tracking-tight text-ink">${STRUCTURES[key].name}</span>
+          <span class="mt-4 block">${stageChips(key, on ? 'bg-folder/25 text-on-folder' : 'bg-sheet text-ink ring-1 ring-line')}</span>
+          <span class="mt-auto block break-keep pt-6 text-sm leading-6 text-muted">${STRUCTURES[key].desc}</span>
+        </button>`;
+      }).join('');
+
+      const rows = others.map((key) => {
+        const on = key === structure;
+        return `<button type="button" data-pick="${key}" class="flex w-full items-center justify-between gap-4 border-l-2 px-4 py-3 text-left motion-safe:transition-colors ${on ? 'border-folder-tab bg-cream/70' : 'border-transparent hover:bg-desk'} ${focusRing}" aria-pressed="${on ? 'true' : 'false'}">
+          <span class="min-w-0"><span class="block text-sm font-medium text-ink">${STRUCTURES[key].name}</span><span class="mt-0.5 block break-keep text-sm leading-6 text-muted">${STRUCTURES[key].desc}</span></span>
+          <span class="hidden shrink-0 font-mono text-xs text-muted md:block">${flowText(key)}</span>
+        </button>`;
+      }).join('');
+
+      // 선택 요약은 본문 흐름 안에 둔다. 넓은 화면에서는 글 유형 아래에 붙어 따라오고, 좁은 화면에서는 구조 목록 뒤에 온다.
+      return `<section class="mx-auto w-full max-w-6xl px-5 py-10 md:px-14 md:py-14" aria-label="구조 선택">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <p class="text-sm font-medium text-ink">${formatToday()}</p>
+            <p class="font-mono text-xs text-muted">글 유형 → 구조 → 작성</p>
+          </div>
+          <h1 class="mt-10 break-keep text-3xl font-semibold leading-tight tracking-tight md:text-4xl">어떤 구조로 쓸까요?</h1>
+          <p class="mt-3 max-w-2xl break-keep text-base leading-7 text-muted">구조를 고르면 문단마다 맡을 역할이 미리 놓입니다. 쓰는 중에 역할은 얼마든지 바꿀 수 있습니다.</p>
+          <div class="mt-12 grid gap-10 md:grid-cols-[12rem_minmax(0,1fr)] md:grid-rows-[auto_1fr] md:gap-x-10 md:gap-y-8">
+            <nav class="md:col-start-1 md:row-start-1" aria-label="글 유형">
+              <h2 class="text-xs font-medium text-muted">글 유형</h2>
+              <div class="mt-3 flex gap-1 overflow-x-auto max-md:[scrollbar-width:none] md:flex-col">${types}</div>
+            </nav>
+            <div class="min-w-0 md:col-start-2 md:row-span-2 md:row-start-1">
+              <h2 class="text-xs font-medium text-muted">추천 구조 · ${typeName(type)}</h2>
+              <div class="mt-4 grid gap-4 md:grid-cols-3">${cards}</div>
+              <h2 class="mt-14 text-xs font-medium text-muted">다른 구조 · ${others.length}개</h2>
+              <div class="mt-3 flex flex-col gap-0.5">${rows}</div>
+            </div>
+            <aside class="md:sticky md:top-8 md:col-start-1 md:row-start-2 md:self-start" aria-label="선택한 구조">
+              <h2 class="text-xs font-medium text-muted">선택한 구조</h2>
+              <div class="mt-3 rounded-lg bg-desk p-4">
+                <p class="m-0 text-xs text-muted">${typeName(type)}</p>
+                <p class="m-0 mt-1 text-lg font-semibold tracking-tight text-ink">${STRUCTURES[structure].name}</p>
+                <div class="mt-3">${stageChips(structure, 'bg-sheet text-ink ring-1 ring-line')}</div>
+                <button type="button" data-start class="${primary} mt-5 w-full">이 구조로 작성 시작</button>
+              </div>
+            </aside>
+          </div>
+        </section>`;
+    }
+
+    function startWriting() {
+      const { type, structure } = state.pick;
+      const roles = STRUCTURES[structure].roles;
+      const now = new Date().toISOString();
+      const doc = makeDoc(type, structure, '', roles.length ? roles.map((role) => [role, '']) : [[null, '']], now, now);
+      state.docs.unshift(doc);
+      state.prefs.deskType = type;
+      state.lastDocId = doc.id;
+      ui.pickTouched = false;
+      persist();
+      location.hash = `/doc/${doc.id}`;
+    }
+
+    /* ---------- 작업대 ---------- */
+
+    const toolTone = {
+      on: `shrink-0 rounded-md bg-folder px-3 py-1 text-sm text-on-folder ring-1 ring-folder motion-safe:transition active:scale-[0.98] ${focusRing}`,
+      off: `shrink-0 rounded-md px-3 py-1 text-sm text-ink ring-1 ring-line-strong motion-safe:transition hover:bg-desk active:scale-[0.98] ${focusRing}`,
+    };
+
+    function work(doc) {
+      const open = state.prefs.panelOpen;
+      return `<section class="flex min-h-[70dvh] flex-1 flex-col bg-sheet text-ink md:min-h-0 md:overflow-hidden" aria-label="작업대">
+        <div id="work-row" class="flex min-h-0 flex-1 flex-col md:flex-row">
+          <div class="relative flex min-w-0 flex-1 flex-col">
+            <div id="source-pane" data-wide="false" class="relative min-h-[46dvh] min-w-0 flex-1 overflow-y-auto md:min-h-0">
+              <div class="work-grid px-2 pt-10 md:px-8">
+                <nav id="outline" class="sticky top-4 max-h-[calc(100dvh-2rem)] overflow-y-auto pb-8 pt-6 [scrollbar-width:thin]" aria-label="문단"></nav>
+                  <div class="work-title min-w-0 pl-[5.5rem] pr-3">
+                    <p class="m-0 text-xs font-medium text-muted">${typeName(doc.writingType)} · ${STRUCTURES[doc.structure].name}</p>
+                    <label class="sr-only" for="doc-title">제목</label>
+                    <textarea id="doc-title" rows="1" maxlength="100" placeholder="제목 없음" class="mt-3 block w-full resize-none overflow-hidden break-keep bg-transparent text-3xl font-semibold leading-tight tracking-tight text-ink outline-none placeholder:text-muted/40 md:text-4xl" spellcheck="false">${escapeHtml(doc.title)}</textarea>
+                    <div class="mt-5 flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-line pb-5">
+                      <p id="save-state" class="m-0 font-mono text-xs text-muted" aria-live="polite"></p>
+                      <p data-count class="m-0 font-mono text-xs text-muted"></p>
+                      <p id="keep-note" class="m-0 text-xs text-muted" aria-live="polite"></p>
+                      <div class="ml-auto flex shrink-0 items-center gap-2">
+                        <button type="button" data-keep class="${toolTone.off}">버전 저장</button>
+                        <button type="button" id="panel-toggle" data-toggle-panel class="${open ? toolTone.on : toolTone.off}" aria-pressed="${open ? 'true' : 'false'}" aria-controls="panel">AI 피드백</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="paras" class="flex min-w-0 flex-col gap-1 pb-24 pt-6"></div>
+              </div>
+            </div>
+            <div id="outline-compact" class="z-20 max-md:fixed max-md:bottom-4 max-md:left-4 md:absolute md:bottom-4 md:left-4"></div>
+          </div>
+          <div id="seam" class="group ${open ? 'md:flex' : ''} hidden w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-sheet ${focusRing}" role="separator" aria-orientation="vertical" aria-label="피드백 너비" tabindex="0">
+            <span class="w-px bg-line group-hover:bg-folder-tab group-focus-visible:bg-folder-tab" aria-hidden="true"></span>
+          </div>
+          <aside id="panel" class="${open ? 'flex' : 'hidden'} relative min-h-[60dvh] shrink-0 flex-col bg-sheet text-ink md:min-h-0" aria-label="AI 피드백"></aside>
+        </div>
+      </section>`;
+    }
+
+    function roleOptions(role) {
+      return `<option value="" ${role ? '' : 'selected'}>역할 없음</option>` +
+        Object.keys(ROLES).map((key) => `<option value="${key}" ${key === role ? 'selected' : ''}>${ROLES[key]}</option>`).join('');
+    }
+
+    function issuesByPara(doc) {
+      const latest = analysesOf(doc.id)[0];
+      const map = {};
+      if (!latest) return map;
+      latest.result.issues.forEach((issue, index) => {
+        if (issue.paragraphId) (map[issue.paragraphId] = map[issue.paragraphId] || []).push(index + 1);
+      });
+      return map;
+    }
+
+    // 연속해서 같은 역할을 가진 문단을 한 묶음으로 본다. 저장은 문단 단위 그대로다.
+    function roleGroups(doc) {
+      const groups = [];
+      doc.paragraphs.forEach((p, index) => {
+        const last = groups[groups.length - 1];
+        if (last && last.role === p.role) last.paras.push(p);
+        else groups.push({ role: p.role, start: index, paras: [p] });
+      });
+      return groups;
+    }
+
+    function renderParas(doc, focus) {
+      const box = document.getElementById('paras');
+      if (!box) return;
+      const marks = issuesByPara(doc);
+      // 같은 역할 묶음은 한 덩어리로 감싸고, 역할 칸과 본문 사이에 묶음 전체를 잇는 막대 하나를 세운다.
+      // 이어지는 문단의 역할 칸은 평소 비워 두고, 그 칸에 마우스를 올리거나 역할 상자에 초점이 오면 드러난다.
+      box.innerHTML = roleGroups(doc).map((group, g) => {
+        const size = group.paras.length;
+        const rule = size > 1 ? '<span class="group-rule pointer-events-none absolute bottom-3.5 left-[5.125rem] top-3.5 z-10 w-0.5 rounded-full bg-line-strong" aria-hidden="true"></span>' : '';
+        const rows = group.paras.map((p, k) => {
+          const index = group.start + k;
+          const head = k === 0;
+          const nums = marks[p.id];
+          const hint = !head ? '이어서 적어 보세요.' : p.role ? ROLE_PROMPTS[p.role] : '문단을 적어 보세요.';
+          const label = head
+            ? `${index + 1}문단 역할${size > 1 ? `, 아래 ${size - 1}문단까지 함께 바뀜` : ''}`
+            : `${index + 1}문단 역할, 앞 문단과 같은 묶음`;
+          const place = head ? 'relative w-full' : 'role-cont absolute left-3 right-0 top-1';
+          return `<div data-para="${p.id}" data-head="${head}" class="para grid grid-cols-[4.75rem_minmax(0,1fr)] gap-3 rounded-md pb-2 pr-3 ${head ? 'pt-2' : ''}">
+            <div class="${head ? '' : 'role-cell '}relative flex flex-col items-start gap-1.5 pl-3 pt-1">
+              <label class="sr-only" for="role-${p.id}">${label}</label>
+              <select id="role-${p.id}" data-role="${p.id}" class="${place} z-10 cursor-pointer appearance-none rounded border border-line bg-sheet px-1.5 py-0.5 text-xs ${p.role ? 'text-ink' : 'text-muted'} hover:border-line-strong ${focusRing}">${roleOptions(p.role)}</select>
+              ${nums ? `<span class="${head ? '' : 'mt-0.5 '}font-mono text-[11px] text-folder-tab">지적 ${nums.join('·')}</span>` : ''}
+            </div>
+            <label class="sr-only" for="text-${p.id}">${index + 1}문단</label>
+            <textarea id="text-${p.id}" data-text="${p.id}" rows="1" placeholder="${escapeHtml(hint)}" class="block w-full resize-none overflow-hidden whitespace-pre-wrap break-words bg-transparent font-mono text-[15px] leading-7 text-ink caret-ink outline-none placeholder:text-muted/40 selection:bg-folder/35 selection:text-ink" spellcheck="false">${escapeHtml(p.text)}</textarea>
+          </div>`;
+        }).join('');
+        return `<div data-group class="relative flex flex-col gap-1 ${g ? 'mt-4' : ''}">${rule}${rows}</div>`;
+      }).join('') + (() => {
+        const next = nextStageRole(doc);
+        return `<button type="button" data-add-para class="ml-[5.75rem] mt-2 self-start rounded-md px-2 py-1 text-sm text-muted motion-safe:transition-colors hover:bg-desk hover:text-ink ${focusRing}">+ 문단${next ? `<span class="text-xs"> · ${ROLES[next]}</span>` : ''}</button>`;
+      })();
+      box.querySelectorAll('[data-text]').forEach(autosize);
+      applyFocusMode(doc);
+      if (focus) {
+        const target = document.getElementById(`text-${focus.id}`);
+        if (target) {
+          target.focus();
+          const pos = focus.pos === 'end' ? target.value.length : focus.pos;
+          target.setSelectionRange(pos, pos);
+        }
+      }
+    }
+
+    function autosize(textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    }
+
+    // 문단 목록은 본문 왼쪽에 테두리 없이 놓여 스크롤을 따라온다.
+    // 본문 폭이 좁으면(휴대폰, 피드백 창을 연 좁은 화면) 왼쪽 아래 버튼으로 여는 목록을 대신 쓴다.
+    function outlineList(doc) {
+      const marks = issuesByPara(doc);
+      const present = new Set(doc.paragraphs.filter((p) => p.text.trim()).map((p) => p.role));
+      const stages = STRUCTURES[doc.structure].roles;
+      const chips = stages.length
+        ? `<p class="m-0 px-3 text-xs font-medium text-muted">구조 단계</p>
+          <ol class="m-0 mt-2 flex list-none flex-wrap gap-1 px-3 pb-0 pt-0" aria-label="구조 단계">${stages.map((role) => {
+            const done = present.has(role);
+            return `<li class="rounded px-1.5 py-0.5 text-xs ${done ? 'bg-folder/25 text-on-folder' : 'text-muted ring-1 ring-line'}">${ROLES[role]}<span class="sr-only">${done ? ', 채움' : ', 비어 있음'}</span></li>`;
+          }).join('')}</ol>`
+        : '';
+      const pad = (n) => String(n).padStart(2, '0');
+      const groups = roleGroups(doc);
+      const items = groups.map((group) => {
+        const ids = group.paras.map((p) => p.id);
+        const on = ids.includes(ui.activePara);
+        const size = group.paras.length;
+        const first = group.paras.find((p) => p.text.trim());
+        const text = first ? first.text.trim() : '';
+        const range = size > 1 ? `${pad(group.start + 1)}–${pad(group.start + size)}` : pad(group.start + 1);
+        return `<button type="button" data-jump="${group.paras[0].id}" class="relative block w-full rounded-md py-1.5 pl-3 pr-2 text-left motion-safe:transition-colors hover:bg-desk ${focusRing}" aria-current="${on ? 'true' : 'false'}">
+          ${on ? '<span class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-folder-tab" aria-hidden="true"></span>' : ''}
+          <span class="flex items-center gap-2">
+            <span class="font-mono text-xs text-muted">${range}</span>
+            <span class="text-sm ${on ? 'font-semibold text-ink' : group.role ? 'text-ink' : 'text-muted'}">${group.role ? ROLES[group.role] : '역할 없음'}</span>
+            ${size > 1 ? `<span class="text-xs text-muted">${size}문단</span>` : ''}
+            ${ids.some((id) => marks[id]) ? '<span class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-folder-tab" aria-hidden="true"></span><span class="sr-only">, 지적 있음</span>' : ''}
+          </span>
+          <span class="mt-0.5 block truncate text-xs text-muted">${escapeHtml(text ? text.slice(0, 40) : '비어 있음')}</span>
+        </button>`;
+      }).join('');
+      return `${chips}<p class="m-0 ${chips ? 'mt-6' : ''} px-3 pb-1 text-xs font-medium text-muted">역할 흐름 · ${groups.length}개, ${doc.paragraphs.length}문단</p>${items}`;
+    }
+
+    function renderOutline(doc) {
+      const wide = document.getElementById('outline');
+      const compact = document.getElementById('outline-compact');
+      if (!wide || !compact) return;
+      const list = outlineList(doc);
+      const open = ui.outlineOpen;
+      const compactHtml = `<button type="button" data-outline-toggle aria-expanded="${open ? 'true' : 'false'}" aria-controls="outline-card" class="flex items-center gap-2 rounded-full bg-sheet px-4 py-2 text-sm text-ink shadow-[0_8px_24px_rgb(26_33_43/0.16)] ring-1 ring-line ${focusRing}">문단 <span class="font-mono text-xs text-muted">${doc.paragraphs.length}</span></button>
+        <div id="outline-card" class="${open ? 'block' : 'hidden'} absolute bottom-12 left-0 max-h-[60dvh] w-64 overflow-y-auto rounded-lg bg-sheet py-3 pr-2 shadow-[0_14px_36px_rgb(26_33_43/0.14)] ring-1 ring-line">${list}</div>`;
+      if (wide.dataset.drawn !== list) {
+        const scroll = wide.scrollTop;
+        wide.innerHTML = list;
+        wide.dataset.drawn = list;
+        wide.scrollTop = scroll;
+      }
+      if (compact.dataset.drawn !== compactHtml) {
+        const card = document.getElementById('outline-card');
+        const scroll = card ? card.scrollTop : 0;
+        compact.innerHTML = compactHtml;
+        compact.dataset.drawn = compactHtml;
+        document.getElementById('outline-card').scrollTop = scroll;
+      }
+    }
+
+    function linkedIssue(doc) {
+      const latest = analysesOf(doc.id)[0];
+      if (!state.prefs.panelOpen || !latest || ui.tab !== 'issues') return null;
+      const issue = latest.result.issues[ui.openIssue];
+      if (!issue || !issue.paragraphId || !doc.paragraphs.some((p) => p.id === issue.paragraphId)) return null;
+      return issue;
+    }
+
+    function applyFocusMode(doc) {
+      const issue = linkedIssue(doc);
+      document.querySelectorAll('#paras [data-para]').forEach((node) => {
+        const id = node.dataset.para;
+        const target = issue && issue.paragraphId === id;
+        node.dataset.on = target || (!issue && id === ui.activePara) ? 'true' : 'false';
+        node.dataset.dim = issue && !target ? 'true' : 'false';
+      });
+    }
+
+    function isStale(doc, analysis) {
+      return JSON.stringify(buildAnalyzeRequest(doc).paragraphs) !== JSON.stringify(analysis.snapshot);
+    }
+
+    function renderPanel(doc) {
+      const panel = document.getElementById('panel');
+      if (!panel || !state.prefs.panelOpen) return;
+      const old = document.getElementById('panel-scroll');
+      const scroll = old ? old.scrollTop : 0;
+      const list = analysesOf(doc.id);
+      const analysis = list[0];
+      const busy = ui.analyzing;
+      const head = `<header class="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-line px-5">
+          <h2 class="m-0 text-sm font-semibold text-ink">AI 피드백</h2>
+          <div class="flex items-center gap-1">
+            <button type="button" data-analyze class="${primary} py-1" ${busy ? 'disabled' : ''}>${busy ? '분석 중…' : analysis ? '다시 분석' : '분석하기'}</button>
+            <button type="button" data-close-panel aria-label="피드백 닫기" class="rounded-md p-1.5 text-muted motion-safe:transition-colors hover:bg-desk hover:text-ink ${focusRing}"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+        </header>`;
+      const error = ui.analyzeError
+        ? `<div class="mx-5 mt-4 rounded-md bg-cream px-3 py-2 text-sm leading-6 text-ink" role="alert">${escapeHtml(ui.analyzeError)} <button type="button" data-analyze class="ml-1 font-medium underline underline-offset-4 ${focusRing}">다시 시도</button></div>`
+        : '';
+      let body = '';
+      if (!analysis) {
+        body = `<div class="px-5 py-8">
+          <p class="m-0 text-base font-semibold text-ink">아직 분석하지 않았습니다</p>
+          <p class="mt-2 break-keep text-sm leading-6 text-muted">문단을 몇 개 적고 분석하기를 누르면 여섯 가지 항목의 점수와 지적 사항이 나옵니다. 소개는 문장을 대신 고치지 않고, 고칠 곳과 질문을 남깁니다.</p>
+        </div>`;
+      } else {
+        const { result } = analysis;
+        const stale = isStale(doc, analysis);
+        const tabs = [['issues', '지적 사항', result.issues.length], ['compare', '구조 비교', null]];
+        body = `<div class="px-5 pt-5">
+            <p class="m-0 font-mono text-xs text-muted">${formatWhen(analysis.createdAt)} · ${list.length}번째 분석 · ${analysis.model}</p>
+            <p class="m-0 mt-3 flex items-baseline gap-2"><span class="text-[3.75rem] font-semibold leading-none tracking-tight tabular-nums">${average(result.scores).toFixed(1)}</span><span class="font-mono text-sm text-muted">/ 10</span></p>
+            ${stale ? '<p class="mt-3 break-keep text-xs leading-5 text-folder-tab">분석한 뒤 글이 바뀌었습니다. 아래 내용은 이전 버전 기준입니다.</p>' : ''}
+            <p class="mt-4 break-keep text-sm leading-7 text-ink">${escapeHtml(result.summary)}</p>
+            <div class="mt-5">${scoreBars(result.scores, true)}</div>
+          </div>
+          <div class="sticky top-0 z-10 mt-6 flex gap-1 border-b border-line bg-sheet/90 px-4 py-2 backdrop-blur" role="tablist" aria-label="피드백 보기">
+            ${tabs.map(([id, label, count]) => {
+              const on = ui.tab === id;
+              return `<button type="button" role="tab" data-tab="${id}" aria-selected="${on ? 'true' : 'false'}" class="rounded-md px-2.5 py-1 text-sm motion-safe:transition-colors ${on ? 'bg-hover font-medium text-ink' : 'text-muted hover:bg-hover/60'} ${focusRing}">${label}${count === null ? '' : ` <span class="font-mono text-xs">${count}</span>`}</button>`;
+            }).join('')}
+          </div>
+          ${ui.tab === 'issues' ? issuesHtml(doc, analysis) : compareHtml(doc, analysis)}`;
+      }
+      panel.innerHTML = `${head}
+        <div id="panel-scroll" class="min-h-0 flex-1 overflow-y-auto">${error}${body}<div class="h-12" aria-hidden="true"></div></div>
+        <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-sheet to-transparent" aria-hidden="true"></div>`;
+      document.getElementById('panel-scroll').scrollTop = scroll;
+      document.querySelectorAll('[data-analyze]').forEach((button) => {
+        button.disabled = busy;
+      });
+    }
+
+    function issuesHtml(doc, analysis) {
+      const { issues } = analysis.result;
+      if (!issues.length) return '<p class="px-5 py-6 text-sm leading-6 text-muted">이번 분석에서는 지적할 곳을 찾지 못했습니다.</p>';
+      return `<ol class="m-0 list-none p-0">${issues.map((issue, index) => {
+        const hint = (analysis.hints && analysis.hints[index]) || { label: '', role: null };
+        const open = index === ui.openIssue;
+        const current = issue.paragraphId ? doc.paragraphs.findIndex((p) => p.id === issue.paragraphId) : -1;
+        const unlinked = issue.paragraphId && current === -1;
+        const where = !issue.paragraphId ? '글 전체' : unlinked ? `분석 때 ${issue.paragraphIndexAtAnalysis + 1}문단` : `${current + 1}문단`;
+        const canApply = hint.role ? true : !unlinked && issue.paragraphId;
+        const detail = open ? `<div class="flex flex-col gap-4 pb-5 pl-11 pr-5">
+            ${unlinked ? '<p class="m-0 text-xs text-folder-tab">현재 문단과 연결되지 않음 · 분석할 때의 문장입니다.</p>' : ''}
+            <blockquote class="m-0 break-keep border-l-2 border-ink pl-3 text-sm leading-7 text-ink">${escapeHtml(issue.excerpt)}</blockquote>
+            <div><p class="m-0 text-xs font-semibold text-ink">생각해 볼 질문</p><p class="m-0 mt-1 break-keep text-sm leading-6 text-ink">${escapeHtml(issue.question)}</p></div>
+            <div><p class="m-0 text-xs font-semibold text-ink">개선 방향</p><p class="m-0 mt-1 break-keep text-sm leading-6 text-ink">${escapeHtml(issue.suggestion)}</p></div>
+            <div><p class="m-0 text-xs font-semibold text-ink">예시 <span class="font-normal text-muted">· 칸은 직접 채워 주세요</span></p><p class="m-0 mt-1.5 break-keep rounded-md bg-sheet px-3 py-2 text-sm leading-7 text-ink ring-1 ring-line">${blanks(issue.revisedExample)}</p></div>
+            ${canApply ? `<div><button type="button" data-apply="${index}" class="rounded-md border border-folder-tab px-3 py-1 text-sm text-ink motion-safe:transition hover:bg-folder/15 active:scale-[0.98] ${focusRing}">${!hint.role ? '예시로 바꾸기' : doc.paragraphs.some((p) => p.role === hint.role && !p.text.trim()) ? `빈 '${ROLES[hint.role]}' 문단에 넣기` : `'${ROLES[hint.role]}' 문단 추가`}</button></div>` : ''}
+          </div>` : '';
+        return `<li class="border-l-2 motion-safe:transition-colors ${open ? 'border-folder-tab bg-cream/70' : 'border-transparent'}">
+          <button type="button" data-issue="${index}" aria-expanded="${open ? 'true' : 'false'}" class="flex w-full gap-3 px-5 py-3 text-left ${open ? '' : 'hover:bg-hover/50'} ${focusRing}">
+            <span class="mt-0.5 w-3 shrink-0 font-mono text-xs text-folder-tab">${index + 1}</span>
+            <span class="min-w-0"><span class="block text-xs text-muted">${where}${hint.label ? ` · ${hint.label}` : ''}</span><span class="mt-1 block break-keep text-sm leading-6 text-ink">${escapeHtml(issue.reason)}</span></span>
+          </button>
+          ${detail}
+        </li>`;
+      }).join('')}</ol>`;
+    }
+
+    function compareHtml(doc, analysis) {
+      const cmp = analysis.result.structureComparison;
+      const label = { match: '일치', partial: '부분 일치', mismatch: '불일치' }[cmp.alignment];
+      const tone = cmp.alignment === 'match' ? 'bg-ink text-sheet' : cmp.alignment === 'partial' ? 'bg-folder/30 text-on-folder' : 'bg-alert text-sheet';
+      const stages = STRUCTURES[cmp.selectedStructure].roles;
+      const roles = analysis.snapshot.map((p) => p.role);
+      const chip = (text, extra) => `<span class="rounded px-1.5 py-0.5 text-xs ${extra}">${text}</span>`;
+      return `<div class="px-5 py-5">
+        <p class="m-0">${chip(label, tone)}</p>
+        <dl class="mt-4 grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+          <dt class="text-muted">선택한 구조</dt><dd class="m-0 font-medium text-ink">${STRUCTURES[cmp.selectedStructure].name}</dd>
+          <dt class="text-muted">읽힌 구조</dt><dd class="m-0 font-medium text-ink">${STRUCTURES[cmp.detectedStructure].name}</dd>
+        </dl>
+        <p class="mt-4 break-keep text-sm leading-7 text-ink">${escapeHtml(cmp.explanation)}</p>
+        <h3 class="mt-6 text-xs font-medium text-muted">선택한 구조의 단계</h3>
+        <div class="mt-2 flex flex-wrap gap-1">${stages.length ? stages.map((role) => chip(ROLES[role], roles.includes(role) ? 'bg-desk text-ink ring-1 ring-line' : 'border border-dashed border-folder-tab text-folder-tab')).join('') : '<span class="text-xs text-muted">정해진 단계 없음</span>'}</div>
+        <h3 class="mt-5 text-xs font-medium text-muted">분석한 글의 문단 순서</h3>
+        <ol class="m-0 mt-2 flex list-none flex-wrap gap-1 p-0">${roles.map((role, index) => `<li>${chip(`<span class="font-mono">${index + 1}</span> ${role ? ROLES[role] : '역할 없음'}`, role ? 'bg-desk text-ink ring-1 ring-line' : 'text-muted ring-1 ring-line')}</li>`).join('')}</ol>
+        ${stages.length ? '<p class="mt-3 text-xs leading-5 text-muted">점선은 아직 어떤 문단도 맡지 않은 단계입니다.</p>' : ''}
+      </div>`;
+    }
+
+    function refreshCounts(doc) {
+      const text = docText(doc);
+      const filled = doc.paragraphs.filter((p) => p.text.trim()).length;
+      app.querySelectorAll('[data-count]').forEach((node) => { node.textContent = `${countChars(text)}자, ${filled}문단`; });
+    }
+
+    function paintSave() {
+      const node = document.getElementById('save-state');
+      if (!node) return;
+      if (ui.saveStatus === 'saving') node.innerHTML = '저장 중…';
+      else if (ui.saveStatus === 'failed') node.innerHTML = `<button type="button" data-retry-save class="text-alert underline underline-offset-4 ${focusRing}">저장 안 됨 · 다시 시도</button>`;
+      else node.textContent = ui.savedAt ? `저장됨 · ${ui.savedAt}` : '저장됨';
+    }
+
+    function scheduleSave(doc) {
+      ui.saveStatus = 'saving';
+      paintSave();
+      clearTimeout(ui.saveTimer);
+      ui.saveTimer = setTimeout(() => flushSave(doc), 800);
+    }
+
+    function flushSave(doc) {
+      clearTimeout(ui.saveTimer);
+      ui.saveTimer = 0;
+      if (doc) doc.updatedAt = new Date().toISOString();
+      const ok = persist();
+      ui.saveStatus = ok ? 'saved' : 'failed';
+      if (ok) ui.savedAt = clock(new Date());
+      paintSave();
+      if (doc && ui.docId === doc.id) renderPanel(doc);
+    }
+
+    function note(text) {
+      const node = document.getElementById('keep-note');
+      if (!node) return;
+      node.textContent = text;
+      clearTimeout(note.timer);
+      note.timer = setTimeout(() => { node.textContent = ''; }, 4000);
+    }
+
+    function currentDoc() { return docById(ui.docId); }
+
+    // '+ 문단'으로 끝에 붙이는 문단은 마지막으로 쓴 구조 단계의 다음 단계를 맡는다.
+    // 마지막 단계였으면 그 단계를 이어 쓰고, 아직 구조 단계를 하나도 쓰지 않았으면 첫 단계부터 시작한다.
+    // 자유 구조처럼 단계가 없으면 마지막 문단의 역할을 그대로 잇는다.
+    function nextStageRole(doc) {
+      const stages = STRUCTURES[doc.structure].roles;
+      const last = doc.paragraphs[doc.paragraphs.length - 1];
+      if (!stages.length) return last ? last.role : null;
+      const written = [...doc.paragraphs].reverse().find((p) => stages.includes(p.role));
+      if (!written) return stages[0];
+      const at = stages.indexOf(written.role);
+      return stages[Math.min(at + 1, stages.length - 1)];
+    }
+
+    function splitPara(textarea) {
+      const doc = currentDoc();
+      const index = doc.paragraphs.findIndex((p) => p.id === textarea.dataset.text);
+      const para = doc.paragraphs[index];
+      const pos = textarea.selectionStart;
+      const tail = para.text.slice(textarea.selectionEnd);
+      para.text = para.text.slice(0, pos);
+      const next = { id: uid(), role: para.role, text: tail };
+      doc.paragraphs.splice(index + 1, 0, next);
+      ui.activePara = next.id;
+      afterStructureChange(doc, { id: next.id, pos: 0 });
+    }
+
+    function mergeUp(textarea) {
+      const doc = currentDoc();
+      const index = doc.paragraphs.findIndex((p) => p.id === textarea.dataset.text);
+      if (index <= 0) return false;
+      const prev = doc.paragraphs[index - 1];
+      const pos = prev.text.length;
+      prev.text += doc.paragraphs[index].text;
+      doc.paragraphs.splice(index, 1);
+      ui.activePara = prev.id;
+      afterStructureChange(doc, { id: prev.id, pos });
+      return true;
+    }
+
+    function mergeDown(textarea) {
+      const doc = currentDoc();
+      const index = doc.paragraphs.findIndex((p) => p.id === textarea.dataset.text);
+      if (index === -1 || index >= doc.paragraphs.length - 1) return false;
+      const para = doc.paragraphs[index];
+      const pos = para.text.length;
+      para.text += doc.paragraphs[index + 1].text;
+      doc.paragraphs.splice(index + 1, 1);
+      afterStructureChange(doc, { id: para.id, pos });
+      return true;
+    }
+
+    function afterStructureChange(doc, focus) {
+      renderParas(doc, focus);
+      renderOutline(doc);
+      renderPanel(doc);
+      refreshCounts(doc);
+      scheduleSave(doc);
+    }
+
+    function pasteParas(textarea, text) {
+      const parts = text.replace(/\r\n/g, '\n').split(/\n+/).map((item) => item.trim()).filter(Boolean);
+      if (parts.length < 2) return false;
+      const doc = currentDoc();
+      const index = doc.paragraphs.findIndex((p) => p.id === textarea.dataset.text);
+      const para = doc.paragraphs[index];
+      const head = para.text.slice(0, textarea.selectionStart);
+      const tail = para.text.slice(textarea.selectionEnd);
+      para.text = head + parts[0];
+      const added = parts.slice(1).map((part) => ({ id: uid(), role: para.role, text: part }));
+      const last = added[added.length - 1];
+      const pos = last.text.length;
+      last.text += tail;
+      doc.paragraphs.splice(index + 1, 0, ...added);
+      ui.activePara = last.id;
+      afterStructureChange(doc, { id: last.id, pos });
+      return true;
+    }
+
+    function runAnalysis() {
+      const doc = currentDoc();
+      if (!doc || ui.analyzing) return;
+      if (!state.prefs.panelOpen) togglePanel(true);
+      const request = buildAnalyzeRequest(doc);
+      ui.analyzeError = '';
+      if (!request.paragraphs.length) {
+        ui.analyzeError = '분석할 문단이 없습니다. 한 문단 이상 적은 뒤 다시 시도해 주세요.';
+        renderPanel(doc);
+        return;
+      }
+      ui.analyzing = true;
+      renderPanel(doc);
+      if (ui.saveTimer) flushSave(doc);
+      setTimeout(() => {
+        const record = analyze(request);
+        const list = state.analyses[doc.id] || (state.analyses[doc.id] = []);
+        list.unshift({
+          id: uid(), documentId: doc.id, versionId: null, snapshot: request.paragraphs, schemaVersion: SCHEMA_VERSION,
+          model: 'mock', promptVersion: null, result: record.result, hints: record.hints, createdAt: new Date().toISOString(),
+        });
+        ui.analyzing = false;
+        ui.tab = 'issues';
+        ui.openIssue = record.result.issues.length ? 0 : -1;
+        persist();
+        const scroller = document.getElementById('panel-scroll');
+        if (scroller) scroller.scrollTop = 0;
+        renderParas(doc);
+        renderOutline(doc);
+        renderPanel(doc);
+        revealIssue(doc);
+      }, 700);
+    }
+
+    function revealIssue(doc) {
+      const issue = linkedIssue(doc);
+      if (!issue) return;
+      const node = document.querySelector(`[data-para="${issue.paragraphId}"]`);
+      const pane = document.getElementById('source-pane');
+      if (!node || !pane) return;
+      const top = node.offsetTop - pane.offsetTop;
+      if (top < pane.scrollTop + 24 || top + node.offsetHeight > pane.scrollTop + pane.clientHeight - 24) {
+        pane.scrollTo({ top: Math.max(0, top - pane.clientHeight / 3), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      }
+    }
+
+    function applySuggestion(index) {
+      const doc = currentDoc();
+      const analysis = analysesOf(doc.id)[0];
+      const issue = analysis && analysis.result.issues[index];
+      if (!issue) return;
+      const hint = (analysis.hints && analysis.hints[index]) || {};
+      if (hint.role) {
+        createVersion(doc, 'before_apply_suggestion');
+        const blank = doc.paragraphs.find((p) => p.role === hint.role && !p.text.trim());
+        if (blank) {
+          blank.text = issue.revisedExample;
+          ui.activePara = blank.id;
+          ui.openIssue = -1;
+          afterStructureChange(doc, { id: blank.id, pos: 'end' });
+          note(`비어 있던 '${ROLES[hint.role]}' 문단에 예시를 넣었습니다. 칸을 채워 주세요.`);
+          return;
+        }
+        const stages = STRUCTURES[doc.structure].roles;
+        const want = stages.indexOf(hint.role);
+        let at = doc.paragraphs.length;
+        for (let i = 0; i < doc.paragraphs.length; i += 1) {
+          if (stages.indexOf(doc.paragraphs[i].role) > want) { at = i; break; }
+        }
+        const para = { id: uid(), role: hint.role, text: issue.revisedExample };
+        doc.paragraphs.splice(at, 0, para);
+        ui.activePara = para.id;
+        ui.openIssue = -1;
+        afterStructureChange(doc, { id: para.id, pos: 'end' });
+        note(`'${ROLES[hint.role]}' 문단을 넣었습니다. 칸을 채워 주세요.`);
+        return;
+      }
+      const para = doc.paragraphs.find((p) => p.id === issue.paragraphId);
+      if (!para || !para.text.includes(issue.excerpt)) {
+        note('지금 글에서 그 문장을 찾지 못했습니다. 예시를 보며 직접 고쳐 주세요.');
+        return;
+      }
+      createVersion(doc, 'before_apply_suggestion');
+      para.text = para.text.replace(issue.excerpt, issue.revisedExample);
+      ui.activePara = para.id;
+      afterStructureChange(doc, { id: para.id, pos: para.text.indexOf(issue.revisedExample) + issue.revisedExample.length });
+      note('예시로 바꿨습니다. 바꾸기 전 글은 버전에 남았습니다.');
+    }
+
+    function togglePanel(force) {
+      const doc = currentDoc();
+      state.prefs.panelOpen = typeof force === 'boolean' ? force : !state.prefs.panelOpen;
+      persist();
+      const open = state.prefs.panelOpen;
+      const panel = document.getElementById('panel');
+      const seam = document.getElementById('seam');
+      const button = document.getElementById('panel-toggle');
+      panel.classList.toggle('hidden', !open);
+      panel.classList.toggle('flex', open);
+      seam.classList.toggle('md:flex', open);
+      button.className = open ? toolTone.on : toolTone.off;
+      button.setAttribute('aria-pressed', open ? 'true' : 'false');
+      applySplit();
+      renderPanel(doc);
+      applyFocusMode(doc);
+    }
+
+    function applySplit() {
+      const panel = document.getElementById('panel');
+      if (!panel) return;
+      panel.style.width = window.matchMedia('(min-width: 768px)').matches ? ui.panelW : '';
+    }
+
+    let paneWatch = null;
+
+    function bindWork() {
+      applySplit();
+      // Tailwind CDN이 스타일을 늦게 붙이거나 폭이 바뀌면 문단 높이를 다시 잰다.
+      if (paneWatch) paneWatch.disconnect();
+      const pane = document.getElementById('source-pane');
+      const measure = () => {
+        const wide = pane.clientWidth >= 800;
+        if (pane.dataset.wide !== String(wide)) {
+          pane.dataset.wide = String(wide);
+          if (wide) ui.outlineOpen = false;
+        }
+      };
+      measure();
+      paneWatch = new ResizeObserver(() => {
+        measure();
+        document.querySelectorAll('#paras [data-text], #doc-title').forEach(autosize);
+      });
+      paneWatch.observe(pane);
+      paneWatch.observe(document.getElementById('paras'));
+      const seam = document.getElementById('seam');
+      seam.addEventListener('pointerdown', (event) => {
+        if (!window.matchMedia('(min-width: 768px)').matches) return;
+        event.preventDefault();
+        seam.setPointerCapture(event.pointerId);
+        const row = document.getElementById('work-row');
+        const move = (ev) => {
+          const rect = row.getBoundingClientRect();
+          const max = rect.width - 360;
+          ui.panelW = Math.round(Math.min(Math.max(rect.right - ev.clientX, 320), Math.max(320, max))) + 'px';
+          applySplit();
+          document.querySelectorAll('#paras [data-text]').forEach(autosize);
+        };
+        const up = () => {
+          seam.removeEventListener('pointermove', move);
+          seam.removeEventListener('pointerup', up);
+        };
+        seam.addEventListener('pointermove', move);
+        seam.addEventListener('pointerup', up);
+      });
+      seam.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const current = document.getElementById('panel').getBoundingClientRect().width;
+        ui.panelW = Math.max(320, current + (event.key === 'ArrowLeft' ? 24 : -24)) + 'px';
+        applySplit();
+        document.querySelectorAll('#paras [data-text]').forEach(autosize);
+      });
+    }
+
+    function notFound() {
+      return `<section class="mx-auto max-w-5xl px-5 py-10 md:px-14 md:py-14" aria-label="문서 없음">
+        <p class="text-sm font-medium text-ink">${formatToday()}</p>
+        <h1 class="mt-10 text-3xl font-semibold tracking-tight md:text-4xl">문서를 찾을 수 없어요</h1>
+        <p class="mt-3 max-w-xl break-keep text-base leading-7 text-muted">지워졌거나 주소가 바뀐 문서입니다. 대시보드에서 다른 글을 열어 주세요.</p>
+        <a href="#/desk" class="${primary} mt-6 inline-block no-underline">대시보드로</a>
+      </section>`;
+    }
+
+    /* ---------- 라우팅 ---------- */
+
+    function route() {
+      const hash = location.hash.replace(/^#/, '') || '/desk';
+      const [path, qs] = hash.split('?');
+      const parts = path.split('/').filter(Boolean);
+      return { raw: hash, name: parts[0] || 'desk', id: parts[1] || '', query: new URLSearchParams(qs || '') };
+    }
+
+    function leaveDoc() {
+      const doc = currentDoc();
+      if (doc && ui.saveTimer) flushSave(doc);
+      ui.docId = '';
+      ui.outlineOpen = false;
+      ui.openIssue = -1;
+      ui.activePara = '';
+      ui.analyzeError = '';
+      ui.analyzing = false;
+    }
+
+    function mount() {
+      const current = route();
+      if (!session() && current.name !== 'login') {
+        location.replace(`#/login?next=${encodeURIComponent(current.raw)}`);
+        return;
+      }
+      if (session() && current.name === 'login') {
+        location.replace('#/desk');
+        return;
+      }
+      if (ui.docId && (current.name !== 'doc' || current.id !== ui.docId)) leaveDoc();
+      document.body.className = 'm-0 min-h-[100dvh] bg-night font-sans text-night-text antialiased';
+      const paper = 'min-w-0 flex-1 overflow-auto bg-sheet text-ink';
+
+      if (current.name === 'login') {
+        app.innerHTML = login();
+        document.title = 'SOGAE 로그인';
+        return;
+      }
+      if (current.name === 'new') {
+        app.innerHTML = shell('new', structurePage(current.query), paper);
+        document.title = 'SOGAE 새 글';
+        return;
+      }
+      if (current.name === 'doc') {
+        const doc = docById(current.id);
+        if (!doc) {
+          app.innerHTML = shell('doc', notFound(), paper);
+          document.title = 'SOGAE 문서 없음';
+          return;
+        }
+        const fresh = ui.docId !== doc.id;
+        ui.docId = doc.id;
+        state.lastDocId = doc.id;
+        state.prefs.deskType = doc.writingType;
+        persist();
+        if (fresh) {
+          const issue = current.query.get('issue');
+          ui.tab = 'issues';
+          ui.openIssue = issue !== null ? Number(issue) : -1;
+          if (issue !== null) state.prefs.panelOpen = true;
+          ui.saveStatus = 'saved';
+          ui.savedAt = clock(new Date(doc.updatedAt));
+        }
+        app.innerHTML = shell('doc', work(doc), 'flex min-h-0 min-w-0 flex-1 flex-col');
+        const empty = doc.paragraphs.find((p) => !p.text);
+        renderParas(doc, fresh && empty ? { id: empty.id, pos: 0 } : null);
+        renderOutline(doc);
+        renderPanel(doc);
+        refreshCounts(doc);
+        paintSave();
+        bindWork();
+        autosize(document.getElementById('doc-title'));
+        revealIssue(doc);
+        document.title = `SOGAE ${docTitle(doc)}`;
+        return;
+      }
+      app.innerHTML = shell('desk', desk(), paper);
+      document.title = 'SOGAE 대시보드';
+    }
+
+    /* ---------- 이벤트 ---------- */
+
+    app.addEventListener('submit', (event) => {
+      if (event.target.id !== 'login-form') return;
+      event.preventDefault();
+      signIn();
+    });
+
+    app.addEventListener('input', (event) => {
+      if (event.target.matches('#email, #password')) {
+        if (ui.loginTouched) checkLogin(true);
+        return;
+      }
+      const doc = currentDoc();
+      if (!doc) return;
+      if (event.target.id === 'doc-title') {
+        doc.title = event.target.value.replace(/\n/g, ' ').slice(0, 100);
+        autosize(event.target);
+        document.title = `SOGAE ${docTitle(doc)}`;
+        scheduleSave(doc);
+        return;
+      }
+      const textarea = event.target.closest('[data-text]');
+      if (!textarea) return;
+      const para = doc.paragraphs.find((p) => p.id === textarea.dataset.text);
+      para.text = textarea.value;
+      autosize(textarea);
+      renderOutline(doc);
+      refreshCounts(doc);
+      scheduleSave(doc);
+    });
+
+    app.addEventListener('focusout', (event) => {
+      if (event.target.matches('#email, #password') && event.target.value) {
+        ui.loginTouched = true;
+        checkLogin(true);
+      }
+    });
+
+    app.addEventListener('change', (event) => {
+      const select = event.target.closest('[data-role]');
+      if (!select) return;
+      const doc = currentDoc();
+      const index = doc.paragraphs.findIndex((p) => p.id === select.dataset.role);
+      const para = doc.paragraphs[index];
+      const before = para.role;
+      const role = select.value || null;
+      if (select.closest('[data-para]').dataset.head === 'true') {
+        for (let i = index; i < doc.paragraphs.length && doc.paragraphs[i].role === before; i += 1) doc.paragraphs[i].role = role;
+      } else {
+        para.role = role;
+      }
+      renderParas(doc);
+      renderOutline(doc);
+      scheduleSave(doc);
+      const again = document.getElementById(`role-${para.id}`);
+      if (again) again.focus();
+    });
+
+    app.addEventListener('focusin', (event) => {
+      const target = event.target.closest('[data-text], [data-role]');
+      if (!target) return;
+      const doc = currentDoc();
+      const id = target.dataset.text || target.dataset.role;
+      ui.activePara = id;
+      const issue = linkedIssue(doc);
+      if (issue && issue.paragraphId !== id) {
+        ui.openIssue = -1;
+        renderPanel(doc);
+      }
+      applyFocusMode(doc);
+      renderOutline(doc);
+    });
+
+    app.addEventListener('keydown', (event) => {
+      if (event.target.id === 'doc-title' && event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault();
+        const first = document.querySelector('#paras [data-text]');
+        if (first) { first.focus(); first.setSelectionRange(0, 0); }
+        return;
+      }
+      const textarea = event.target.closest && event.target.closest('[data-text]');
+      if (!textarea || event.isComposing || event.keyCode === 229) return;
+      const atStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0;
+      const atEnd = textarea.selectionStart === textarea.value.length && textarea.selectionEnd === textarea.value.length;
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        splitPara(textarea);
+      } else if (event.key === 'Backspace' && atStart) {
+        if (mergeUp(textarea)) event.preventDefault();
+      } else if (event.key === 'Delete' && atEnd) {
+        if (mergeDown(textarea)) event.preventDefault();
+      } else if (event.key === 'ArrowUp' && atStart) {
+        // 문단은 역할 묶음마다 감싸여 있으므로 형제 대신 전체 문단 순서로 옮겨 간다.
+        const all = [...document.querySelectorAll('#paras [data-text]')];
+        const target = all[all.indexOf(textarea) - 1];
+        if (target) { event.preventDefault(); target.focus(); target.setSelectionRange(target.value.length, target.value.length); }
+      } else if (event.key === 'ArrowDown' && atEnd) {
+        const all = [...document.querySelectorAll('#paras [data-text]')];
+        const target = all[all.indexOf(textarea) + 1];
+        if (target) { event.preventDefault(); target.focus(); target.setSelectionRange(0, 0); }
+      }
+    });
+
+    app.addEventListener('paste', (event) => {
+      const textarea = event.target.closest && event.target.closest('[data-text]');
+      if (!textarea) return;
+      const text = event.clipboardData.getData('text/plain');
+      if (pasteParas(textarea, text)) event.preventDefault();
+    });
+
+    app.addEventListener('click', (event) => {
+      if (event.target.closest('[data-signout]')) {
+        leaveDoc();
+        state.session = null;
+        persist();
+        location.hash = '/login';
+        return;
+      }
+      const deskType = event.target.closest('[data-desk-type]');
+      if (deskType) { state.prefs.deskType = deskType.dataset.deskType; persist(); mount(); return; }
+      const remover = event.target.closest('[data-remove]');
+      if (remover) {
+        const doc = docById(remover.dataset.remove);
+        if (!doc || !window.confirm(`「${docTitle(doc)}」을 지울까요? 분석과 버전도 함께 사라집니다.`)) return;
+        state.docs = state.docs.filter((item) => item.id !== doc.id);
+        delete state.analyses[doc.id];
+        delete state.versions[doc.id];
+        if (state.lastDocId === doc.id) state.lastDocId = sortedDocs()[0] ? sortedDocs()[0].id : '';
+        persist();
+        mount();
+        return;
+      }
+      const pickType = event.target.closest('[data-pick-type]');
+      if (pickType) {
+        ui.pickTouched = true;
+        state.pick = { type: pickType.dataset.pickType, structure: RECOMMEND[pickType.dataset.pickType][0] };
+        persist();
+        mount();
+        return;
+      }
+      const pick = event.target.closest('[data-pick]');
+      if (pick) {
+        ui.pickTouched = true;
+        state.pick.structure = pick.dataset.pick;
+        persist();
+        const scroller = app.querySelector('.overflow-auto');
+        const scroll = scroller ? scroller.scrollTop : 0;
+        mount();
+        const again = app.querySelector('.overflow-auto');
+        if (again) again.scrollTop = scroll;
+        const button = app.querySelector(`[data-pick="${pick.dataset.pick}"]`);
+        if (button) button.focus({ preventScroll: true });
+        return;
+      }
+      if (event.target.closest('[data-start]')) { startWriting(); return; }
+
+      const doc = currentDoc();
+      if (!doc) return;
+      if (event.target.closest('[data-outline-toggle]')) { ui.outlineOpen = !ui.outlineOpen; renderOutline(doc); return; }
+      if (ui.outlineOpen && !event.target.closest('#outline-compact')) { ui.outlineOpen = false; renderOutline(doc); }
+      if (event.target.closest('[data-close-panel]')) { togglePanel(false); document.getElementById('panel-toggle').focus(); return; }
+      if (event.target.closest('[data-toggle-panel]')) { togglePanel(); return; }
+      if (event.target.closest('[data-analyze]')) { runAnalysis(); return; }
+      if (event.target.closest('[data-retry-save]')) { flushSave(doc); return; }
+      if (event.target.closest('[data-keep]')) {
+        if (ui.saveTimer) flushSave(doc);
+        const kept = createVersion(doc, 'manual');
+        persist();
+        const count = (state.versions[doc.id] || []).length;
+        note(kept ? `버전 ${count}을 남겼습니다.` : '이미 남겨 둔 버전과 같습니다.');
+        return;
+      }
+      if (event.target.closest('[data-add-para]')) {
+        const para = { id: uid(), role: nextStageRole(doc), text: '' };
+        doc.paragraphs.push(para);
+        ui.activePara = para.id;
+        afterStructureChange(doc, { id: para.id, pos: 0 });
+        return;
+      }
+      const jump = event.target.closest('[data-jump]');
+      if (jump) {
+        ui.outlineOpen = false;
+        const textarea = document.getElementById(`text-${jump.dataset.jump}`);
+        if (textarea) {
+          textarea.focus({ preventScroll: true });
+          textarea.closest('[data-para]').scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        }
+        return;
+      }
+      const tab = event.target.closest('[data-tab]');
+      if (tab) { ui.tab = tab.dataset.tab; renderPanel(doc); applyFocusMode(doc); return; }
+      const issue = event.target.closest('[data-issue]');
+      if (issue) {
+        const index = Number(issue.dataset.issue);
+        ui.openIssue = ui.openIssue === index ? -1 : index;
+        renderPanel(doc);
+        applyFocusMode(doc);
+        revealIssue(doc);
+        const again = document.querySelector(`[data-issue="${index}"]`);
+        if (again) again.focus({ preventScroll: true });
+        return;
+      }
+      const apply = event.target.closest('[data-apply]');
+      if (apply) { applySuggestion(Number(apply.dataset.apply)); }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && ui.docId && ui.outlineOpen) {
+        ui.outlineOpen = false;
+        renderOutline(currentDoc());
+        return;
+      }
+      if (event.key === 'Escape' && ui.docId && ui.openIssue !== -1) {
+        ui.openIssue = -1;
+        const doc = currentDoc();
+        renderPanel(doc);
+        applyFocusMode(doc);
+      }
+    });
+
+    window.addEventListener('hashchange', mount);
+    window.addEventListener('resize', () => {
+      if (!ui.docId) return;
+      applySplit();
+      document.querySelectorAll('#paras [data-text]').forEach(autosize);
+    });
+    window.addEventListener('beforeunload', () => {
+      const doc = currentDoc();
+      if (doc && ui.saveTimer) flushSave(doc);
+    });
+
+    load();
+    mount();
+  </script>
+</body>
+</html>
